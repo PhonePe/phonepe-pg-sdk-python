@@ -35,6 +35,7 @@ class StandardCheckoutPayRequest:
     meta_info: MetaInfo = field(default=None)
     payment_flow: PaymentFlow = field(default=None)
     expire_after: int = field(default=None)
+    disable_payment_retry: bool = field(default=None)
 
     @staticmethod
     def build_request(
@@ -45,6 +46,7 @@ class StandardCheckoutPayRequest:
             expire_after: int = None,
             meta_info: MetaInfo = None,
             payment_mode_config: PaymentModeConfig = None,
+            disable_payment_retry: bool = None,
     ):
         """
         Builds Standard Checkout Pay Request
@@ -81,4 +83,5 @@ class StandardCheckoutPayRequest:
                 payment_mode_config=payment_mode_config,
             ),
             expire_after=expire_after,
+            disable_payment_retry=disable_payment_retry,
         )

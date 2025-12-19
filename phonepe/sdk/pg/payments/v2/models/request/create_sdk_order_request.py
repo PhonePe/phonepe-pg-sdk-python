@@ -37,6 +37,7 @@ class CreateSdkOrderRequest:
     payment_flow: PaymentFlow = field(default=None)
     constraints: List[InstrumentConstraint] = field(default=None)
     expire_after: int = field(default=None)
+    disable_payment_retry: bool = field(default=None)
 
     @staticmethod
     def build_standard_checkout_request(
@@ -46,6 +47,7 @@ class CreateSdkOrderRequest:
         message: str = None,
         meta_info: MetaInfo = None,
         expire_after: int = None,
+        disable_payment_retry: bool = None
     ):
         """
         Builds SDK order Request for standard checkout client
@@ -79,6 +81,7 @@ class CreateSdkOrderRequest:
                 message=message, merchant_urls=MerchantUrls(redirect_url=redirect_url)
             ),
             expire_after=expire_after,
+            disable_payment_retry=disable_payment_retry
         )
 
     @staticmethod
@@ -88,6 +91,7 @@ class CreateSdkOrderRequest:
         meta_info: MetaInfo = None,
         constraints: List[InstrumentConstraint] = None,
         expire_after: int = None,
+        disable_payment_retry: bool = None
     ):
         """
         Builds SDK order Request for custom checkout client
@@ -118,4 +122,5 @@ class CreateSdkOrderRequest:
             payment_flow=PgCheckoutPaymentFlow(),
             constraints=constraints,
             expire_after=expire_after,
+            disable_payment_retry=disable_payment_retry
         )
