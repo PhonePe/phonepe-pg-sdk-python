@@ -66,6 +66,8 @@ class CreateSdkOrderRequest:
             Merchant defined meta info to store additional information
         expire_after: int
             Order expiry in seconds. If not passed default value will be used
+        disable_payment_retry: bool
+            disable payment retry parameter for standard checkout allows merchants to control if endUser is allowed to do a payment retry on the payment page
 
         Returns
         ----------
@@ -108,6 +110,8 @@ class CreateSdkOrderRequest:
             Different type of constraints that must be applied to the payment
         expire_after: int
             Order expiry in seconds. If not passed default value will be used
+        disable_payment_retry: bool
+            disable payment retry parameter for standard checkout allows merchants to control if endUser is allowed to do a payment retry on the payment page
 
         Returns
         ----------
