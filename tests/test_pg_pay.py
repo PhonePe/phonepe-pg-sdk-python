@@ -126,3 +126,59 @@ class PayTestWithOauth(BaseTestWithOauth):
             redirect_url="mercury.com",
         )
         assert expected_response == actual_response
+
+    @responses.activate
+    def test_pay_page_disable_payment_retry(self):
+        response_string = """{"orderId": "OMO2403071446458436434329", "state": "PENDING", "expireAt": 1709803425841, "redirectUrl": "mercury.com"}"""
+
+        standard_checkout_client = BaseTestWithOauth.standard_checkout_client
+        pay_request = StandardCheckoutPayRequest.build_request(
+            merchant_order_id="MOID01",
+            amount=1000,
+            redirect_url="url.com",
+            disable_payment_retry=True,
+        )
+        responses.add(
+            responses.POST,
+            get_pg_base_url(Env.SANDBOX) + PAY_API,
+            status=200,
+            json=json.loads(response_string),
+        )
+
+        actual_response = standard_checkout_client.pay(pay_request=pay_request)
+        expected_response = StandardCheckoutPayResponse(
+            order_id="OMO2403071446458436434329",
+            state="PENDING",
+            expire_at=1709803425841,
+            redirect_url="mercury.com",
+        )
+        assert pay_request.disable_payment_retry
+        assert expected_response == actual_response
+
+    @responses.activate
+    def test_pay_page_enabled_payment_retry(self):
+        response_string = """{"orderId": "OMO2403071446458436434329", "state": "PENDING", "expireAt": 1709803425841, "redirectUrl": "mercury.com"}"""
+
+        standard_checkout_client = BaseTestWithOauth.standard_checkout_client
+        pay_request = StandardCheckoutPayRequest.build_request(
+            merchant_order_id="MOID01",
+            amount=1000,
+            redirect_url="url.com",
+            disable_payment_retry=False,
+        )
+        responses.add(
+            responses.POST,
+            get_pg_base_url(Env.SANDBOX) + PAY_API,
+            status=200,
+            json=json.loads(response_string),
+        )
+
+        actual_response = standard_checkout_client.pay(pay_request=pay_request)
+        expected_response = StandardCheckoutPayResponse(
+            order_id="OMO2403071446458436434329",
+            state="PENDING",
+            expire_at=1709803425841,
+            redirect_url="mercury.com",
+        )
+        assert not pay_request.disable_payment_retry
+        assert expected_response == actual_response

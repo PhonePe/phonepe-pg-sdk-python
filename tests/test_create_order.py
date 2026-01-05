@@ -67,3 +67,46 @@ class TestCreateOrderWithOauth(BaseTestWithOauth):
                                                    token='token')
 
         assert expected_response == actual_response
+
+    @responses.activate
+    def test_create_order_success_custom_disable_retry_true(self):
+        response_string = """{"orderId": "OMO2403071437388196434033", "state": "PENDING", "expireAt": 1709802878811, "token": "token"}"""
+        standard_checkout_client = BaseTestWithOauth.custom_checkout_client
+        checkout_order_request = CreateSdkOrderRequest.build_custom_checkout_request(
+            merchant_order_id="merchant_order_id",
+            amount=100,
+            disable_payment_retry=True)
+        assert checkout_order_request.disable_payment_retry
+
+        responses.add(responses.POST, get_pg_base_url(Env.SANDBOX) + custom_order_api, status=200,
+                      json=json.loads(response_string))
+
+        actual_response = standard_checkout_client.create_sdk_order(sdk_order_request=checkout_order_request)
+        expected_response = CreateSdkOrderResponse(order_id='OMO2403071437388196434033',
+                                                   state='PENDING',
+                                                   expire_at=1709802878811,
+                                                   token='token')
+
+        assert expected_response == actual_response
+
+    @responses.activate
+    def test_create_order_success_custom_disable_retry_false(self):
+        response_string = """{"orderId": "OMO2403071437388196434033", "state": "PENDING", "expireAt": 1709802878811, "token": "token"}"""
+        standard_checkout_client = BaseTestWithOauth.custom_checkout_client
+        checkout_order_request = CreateSdkOrderRequest.build_custom_checkout_request(
+            merchant_order_id="merchant_order_id",
+            amount=100,
+            disable_payment_retry=False)
+        assert not checkout_order_request.disable_payment_retry
+
+        responses.add(responses.POST, get_pg_base_url(Env.SANDBOX) + custom_order_api, status=200,
+                      json=json.loads(response_string))
+
+        actual_response = standard_checkout_client.create_sdk_order(sdk_order_request=checkout_order_request)
+        expected_response = CreateSdkOrderResponse(order_id='OMO2403071437388196434033',
+                                                   state='PENDING',
+                                                   expire_at=1709802878811,
+                                                   token='token')
+
+        assert expected_response == actual_response
+

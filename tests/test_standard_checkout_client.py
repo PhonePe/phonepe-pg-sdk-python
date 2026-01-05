@@ -23,7 +23,6 @@ from responses import matchers
 import phonepe
 from phonepe.sdk.pg.common.exceptions import UnauthorizedAccess
 from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
-from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.env import Env, get_pg_base_url, get_oauth_base_url
 from phonepe.sdk.pg.common.models.request.meta_info import MetaInfo
 from phonepe.sdk.pg.payments.v2.models.request.pg_v2_instrument_type import PgV2InstrumentType
