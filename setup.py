@@ -38,7 +38,7 @@ if CURRENT_PYTHON < REQUIRED_PYTHON:
 
 
 setup(
-    name='phonepe_sdk',
+    name='phonepe-pg-sdk-python',
     version=phonepe.__version__,
     author='PhonePe',
     description='SDK for integration with PhonePe PG APIs',
