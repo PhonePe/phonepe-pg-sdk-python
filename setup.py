@@ -36,11 +36,17 @@ if CURRENT_PYTHON < REQUIRED_PYTHON:
     )
     sys.exit(1)
 
+with open('README.md') as readme:
+    readme_content = readme.read()
 
 setup(
     name='phonepe-pg-sdk-python',
     version=phonepe.__version__,
     author='PhonePe',
+    long_description_content_type='text/markdown',
+    long_description=readme_content,
+    keywords='PhonePe payment gateway',
+    url="https://github.com/PhonePe/phonepe-pg-sdk-python",
     description='SDK for integration with PhonePe PG APIs',
     packages=find_packages(),
     install_requires=[
