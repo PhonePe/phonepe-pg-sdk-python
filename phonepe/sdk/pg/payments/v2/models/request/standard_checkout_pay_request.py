@@ -25,6 +25,9 @@ from phonepe.sdk.pg.payments.v2.models.request.payment_mode_config import (
 from phonepe.sdk.pg.payments.v2.models.request.pg_checkout_payment_flow import (
     PgCheckoutPaymentFlow,
 )
+from phonepe.sdk.pg.payments.v2.models.request.prefill_user_login_details import (
+    PrefillUserLoginDetails,
+)
 
 
 @dataclass_json(letter_case=LetterCase.CAMEL)
@@ -36,6 +39,7 @@ class StandardCheckoutPayRequest:
     payment_flow: PaymentFlow = field(default=None)
     expire_after: int = field(default=None)
     disable_payment_retry: bool = field(default=None)
+    prefill_user_login_details: PrefillUserLoginDetails = field(default=None)
 
     @staticmethod
     def build_request(
@@ -47,6 +51,7 @@ class StandardCheckoutPayRequest:
             meta_info: MetaInfo = None,
             payment_mode_config: PaymentModeConfig = None,
             disable_payment_retry: bool = None,
+            prefill_user_login_details: PrefillUserLoginDetails = None,
     ):
         """
         Builds Standard Checkout Pay Request
@@ -67,8 +72,8 @@ class StandardCheckoutPayRequest:
             Order expiry in seconds. If not passed default value will be used
         payment_mode_config: PaymentModeConfig
             Payment mode configuration for standard checkout. Contains enabled and disabled payment modes for instrument control. If not passed default value will be used
-        disable_payment_retry: bool
-            disable payment retry parameter for standard checkout allows merchants to control if endUser is allowed to do a payment retry on the payment page
+        prefill_user_login_details: PrefillUserLoginDetails
+            User login details to prefill on the payment page
 
         Returns
         ----------
@@ -86,4 +91,5 @@ class StandardCheckoutPayRequest:
             ),
             expire_after=expire_after,
             disable_payment_retry=disable_payment_retry,
+            prefill_user_login_details=prefill_user_login_details,
         )

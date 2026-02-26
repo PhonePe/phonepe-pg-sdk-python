@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List
+from typing import List, Optional
 from dataclasses import dataclass, field
-from dataclasses_json import dataclass_json, LetterCase
+from dataclasses_json import dataclass_json, LetterCase, config
 
 from phonepe.sdk.pg.common.models.request.payment_flow import PaymentFlow
 from phonepe.sdk.pg.common.models.request.device_context import DeviceContext
@@ -86,6 +86,7 @@ class PgPaymentRequest:
     constraints: List[InstrumentConstraint] = field(default=None)
     expire_after: int = field(default=None)
     expire_at: int = field(default=None)
+    x_device_os: Optional[str] = field(default=None, metadata=config(exclude=lambda x: True))
 
     @staticmethod
     def build_upi_intent_pay_request(
@@ -148,6 +149,7 @@ class PgPaymentRequest:
         meta_info: MetaInfo = None,
         constraints: List[InstrumentConstraint] = None,
         expire_after: int = None,
+        x_device_os: str = None,
     ):
         """
         Builds a payment request for UPI collect payment via VPA (Virtual Payment Address).
@@ -174,7 +176,7 @@ class PgPaymentRequest:
         PgPaymentRequest
             The constructed payment request object.
         """
-        return PgPaymentRequest(
+        request = PgPaymentRequest(
             merchant_order_id=merchant_order_id,
             amount=amount,
             meta_info=meta_info,
@@ -186,6 +188,8 @@ class PgPaymentRequest:
             ),
             expire_after=expire_after,
         )
+        request.x_device_os = x_device_os
+        return request
 
     @staticmethod
     def build_upi_collect_pay_via_phone_number_request(
@@ -196,6 +200,7 @@ class PgPaymentRequest:
         meta_info: MetaInfo = None,
         constraints: List[InstrumentConstraint] = None,
         expire_after: int = None,
+        x_device_os: str = None,
     ):
         """
         Builds a payment request for UPI collect payment via phone number.
@@ -222,7 +227,7 @@ class PgPaymentRequest:
         PgPaymentRequest
             The constructed payment request object.
         """
-        return PgPaymentRequest(
+        request = PgPaymentRequest(
             merchant_order_id=merchant_order_id,
             amount=amount,
             meta_info=meta_info,
@@ -235,6 +240,8 @@ class PgPaymentRequest:
             ),
             expire_after=expire_after,
         )
+        request.x_device_os = x_device_os
+        return request
 
     @staticmethod
     def build_upi_qr_pay_request(

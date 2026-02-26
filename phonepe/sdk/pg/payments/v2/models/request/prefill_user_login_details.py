@@ -11,22 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import phonepe
 
-# Event headers
-API_VERSION = "V2"
-SUBSCRIPTION_API_VERSION = phonepe.__version__
-SDK_TYPE = "BACKEND_PYTHON_SDK"
-INTEGRATION = "API"
-SOURCE = "x-source"
-SOURCE_VERSION = "x-source-version"
-SOURCE_PLATFORM = "x-source-platform"
-SOURCE_PLATFORM_VERSION = "x-source-platform-version"
+from dataclasses import dataclass, field
 
-# APIs headers
-AUTHORIZATION = "Authorization"
-ACCEPT = "Accept"
-CONTENT_TYPE = "Content-Type"
-APPLICATION_JSON = "application/json"
-X_WWW_FORM_URLENCODED = "application/x-www-form-urlencoded"
-X_DEVICE_OS = "x-device-os"
+from dataclasses_json import dataclass_json, LetterCase
+
+
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass
+class PrefillUserLoginDetails:
+    phone_number: str = field(default=None)

@@ -58,7 +58,7 @@ class TestRequestDeserialization(TestCase):
             "moid", 10, "redirect-url", payment_mode_config=self.payment_mode_config
         )
 
-        resp1 = """{"merchantOrderId": "moid", "amount": 10, "metaInfo": null, "paymentFlow": {"type": "PG_CHECKOUT", "message": null, "merchantUrls": {"redirectUrl": "redirect-url"}, "paymentModeConfig": {"enabledPaymentModes": [{"type": "UPI_INTENT"}, {"type": "UPI_COLLECT"}, {"type": "UPI_QR"}, {"type": "NET_BANKING"}, {"type": "CARD", "cardTypes": ["DEBIT_CARD", "CREDIT_CARD"]}], "disabledPaymentModes": null}}, "expireAfter": null, "disablePaymentRetry": null}"""
+        resp1 = """{"merchantOrderId": "moid", "amount": 10, "metaInfo": null, "paymentFlow": {"type": "PG_CHECKOUT", "message": null, "merchantUrls": {"redirectUrl": "redirect-url"}, "paymentModeConfig": {"enabledPaymentModes": [{"type": "UPI_INTENT"}, {"type": "UPI_COLLECT"}, {"type": "UPI_QR"}, {"type": "NET_BANKING"}, {"type": "CARD", "cardTypes": ["DEBIT_CARD", "CREDIT_CARD"]}], "disabledPaymentModes": null}}, "expireAfter": null, "disablePaymentRetry": null, "prefillUserLoginDetails": null}"""
         assert obj1.to_json() == resp1
 
         obj2 = StandardCheckoutPayRequest.build_request(
@@ -68,7 +68,7 @@ class TestRequestDeserialization(TestCase):
             meta_info=MetaInfo.build_meta_info(udf1="sad"),
             payment_mode_config=self.payment_mode_config,
         )
-        resp2 = """{"merchantOrderId": "moid", "amount": 10, "metaInfo": {"udf1": "sad", "udf2": null, "udf3": null, "udf4": null, "udf5": null}, "paymentFlow": {"type": "PG_CHECKOUT", "message": null, "merchantUrls": {"redirectUrl": "redirect-url"}, "paymentModeConfig": {"enabledPaymentModes": [{"type": "UPI_INTENT"}, {"type": "UPI_COLLECT"}, {"type": "UPI_QR"}, {"type": "NET_BANKING"}, {"type": "CARD", "cardTypes": ["DEBIT_CARD", "CREDIT_CARD"]}], "disabledPaymentModes": null}}, "expireAfter": null, "disablePaymentRetry": null}"""
+        resp2 = """{"merchantOrderId": "moid", "amount": 10, "metaInfo": {"udf1": "sad", "udf2": null, "udf3": null, "udf4": null, "udf5": null}, "paymentFlow": {"type": "PG_CHECKOUT", "message": null, "merchantUrls": {"redirectUrl": "redirect-url"}, "paymentModeConfig": {"enabledPaymentModes": [{"type": "UPI_INTENT"}, {"type": "UPI_COLLECT"}, {"type": "UPI_QR"}, {"type": "NET_BANKING"}, {"type": "CARD", "cardTypes": ["DEBIT_CARD", "CREDIT_CARD"]}], "disabledPaymentModes": null}}, "expireAfter": null, "disablePaymentRetry": null, "prefillUserLoginDetails": null}"""
         assert obj2.to_json() == resp2
 
         obj3 = StandardCheckoutPayRequest.build_request(
@@ -79,7 +79,7 @@ class TestRequestDeserialization(TestCase):
             payment_mode_config=self.payment_mode_config,
         )
 
-        resp3 = """{"merchantOrderId": "moid", "amount": 10, "metaInfo": {"udf1": "sad", "udf2": null, "udf3": null, "udf4": null, "udf5": "udf5"}, "paymentFlow": {"type": "PG_CHECKOUT", "message": null, "merchantUrls": {"redirectUrl": "redirect-url"}, "paymentModeConfig": {"enabledPaymentModes": [{"type": "UPI_INTENT"}, {"type": "UPI_COLLECT"}, {"type": "UPI_QR"}, {"type": "NET_BANKING"}, {"type": "CARD", "cardTypes": ["DEBIT_CARD", "CREDIT_CARD"]}], "disabledPaymentModes": null}}, "expireAfter": null, "disablePaymentRetry": null}"""
+        resp3 = """{"merchantOrderId": "moid", "amount": 10, "metaInfo": {"udf1": "sad", "udf2": null, "udf3": null, "udf4": null, "udf5": "udf5"}, "paymentFlow": {"type": "PG_CHECKOUT", "message": null, "merchantUrls": {"redirectUrl": "redirect-url"}, "paymentModeConfig": {"enabledPaymentModes": [{"type": "UPI_INTENT"}, {"type": "UPI_COLLECT"}, {"type": "UPI_QR"}, {"type": "NET_BANKING"}, {"type": "CARD", "cardTypes": ["DEBIT_CARD", "CREDIT_CARD"]}], "disabledPaymentModes": null}}, "expireAfter": null, "disablePaymentRetry": null, "prefillUserLoginDetails": null}"""
         assert obj3.to_json() == resp3
 
     def test_custom_deserialization(self):
