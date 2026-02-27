@@ -72,6 +72,8 @@ class StandardCheckoutPayRequest:
             Order expiry in seconds. If not passed default value will be used
         payment_mode_config: PaymentModeConfig
             Payment mode configuration for standard checkout. Contains enabled and disabled payment modes for instrument control. If not passed default value will be used
+        disable_payment_retry: bool
+            disable payment retry parameter for standard checkout allows merchants to control if endUser is allowed to do a payment retry on the payment page
         prefill_user_login_details: PrefillUserLoginDetails
             User login details to prefill on the payment page
 

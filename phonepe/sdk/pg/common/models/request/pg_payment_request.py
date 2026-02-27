@@ -200,7 +200,7 @@ class PgPaymentRequest:
         meta_info: MetaInfo = None,
         constraints: List[InstrumentConstraint] = None,
         expire_after: int = None,
-        x_device_os: str = None,
+        device_os: str = None,
     ):
         """
         Builds a payment request for UPI collect payment via phone number.
@@ -240,7 +240,7 @@ class PgPaymentRequest:
             ),
             expire_after=expire_after,
         )
-        request.x_device_os = x_device_os
+        request.device_os = device_os
         return request
 
     @staticmethod
