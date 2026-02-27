@@ -150,7 +150,7 @@ class CustomCheckoutClient(BaseClient):
             contains instrument related details
         """
         try:
-            extra_headers = {X_DEVICE_OS: pay_request.x_device_os} if pay_request.x_device_os else {}
+            extra_headers = {X_DEVICE_OS: pay_request.device_os} if pay_request.device_os else {}
             response = self._request_via_auth_refresh(
                 method=HttpMethodType.POST,
                 url=PAY_API,

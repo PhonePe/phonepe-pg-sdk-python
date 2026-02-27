@@ -219,7 +219,7 @@ class TestCustomCheckoutXDeviceOs(BaseCustomCheckoutClientForTest):
             amount=1000,
             vpa="test@upi",
             message="Pay now",
-            x_device_os="ANDROID",
+            device_os="ANDROID",
         )
         response = self.custom_checkout_client.pay(request)
         assert response is not None
@@ -248,8 +248,8 @@ class TestCustomCheckoutXDeviceOs(BaseCustomCheckoutClientForTest):
             amount=1000,
             vpa="test@upi",
             message="Pay now",
-            x_device_os="ANDROID",
+            device_os="ANDROID",
         )
         request_json = request.to_json()
-        assert "x_device_os" not in request_json
-        assert "xDeviceOs" not in request_json
+        assert "device_os" not in request_json
+        assert "DeviceOs" not in request_json
