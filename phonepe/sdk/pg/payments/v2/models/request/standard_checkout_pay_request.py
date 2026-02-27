@@ -14,7 +14,8 @@
 
 from dataclasses import dataclass, field
 
-from dataclasses_json import dataclass_json, LetterCase
+from dataclasses_json import dataclass_json, LetterCase, config
+from typing import Optional
 
 from phonepe.sdk.pg.common.models.request.meta_info import MetaInfo
 from phonepe.sdk.pg.common.models.request.payment_flow import PaymentFlow
@@ -39,7 +40,9 @@ class StandardCheckoutPayRequest:
     payment_flow: PaymentFlow = field(default=None)
     expire_after: int = field(default=None)
     disable_payment_retry: bool = field(default=None)
-    prefill_user_login_details: PrefillUserLoginDetails = field(default=None)
+    # prefill_user_login_details: PrefillUserLoginDetails = field(default=None)
+    prefill_user_login_details: Optional[PrefillUserLoginDetails] = field(
+        default=None,metadata=config(exclude=lambda x: x is None))
 
     @staticmethod
     def build_request(

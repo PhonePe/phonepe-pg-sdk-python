@@ -119,6 +119,7 @@ class TestPrefillUserLoginDetails(BaseTestWithOauth):
         payload = json.loads(request.to_json())
         # The field should either be absent or None — it must not carry a value.
         assert payload.get("prefillUserLoginDetails") is None
+        assert "prefillUserLoginDetails" not in payload
 
     # ------------------------------------------------------------------ #
     # End-to-end HTTP tests (pay API)                                     #

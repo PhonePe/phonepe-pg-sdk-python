@@ -86,6 +86,13 @@ class PgPaymentRequest:
     constraints: List[InstrumentConstraint] = field(default=None)
     expire_after: int = field(default=None)
     expire_at: int = field(default=None)
+
+    # The "x-device-os" request header is currently required only for UPI COLLECT transactions.
+    # Once the COLLECT payment instrument is fully disabled, as per the guidelines,
+    # this header will no longer be necessary, even for iOS devices.
+    # To streamline the request structure and avoid unnecessary complexity,
+    # this header is now being incorporated directly into the request builder
+    # instead of being managed as a separate value.
     device_os: Optional[str] = field(default=None, metadata=config(exclude=lambda x: True))
 
     @staticmethod
@@ -176,7 +183,7 @@ class PgPaymentRequest:
         PgPaymentRequest
             The constructed payment request object.
         """
-        request = PgPaymentRequest(
+        return PgPaymentRequest(
             merchant_order_id=merchant_order_id,
             amount=amount,
             meta_info=meta_info,
@@ -187,9 +194,8 @@ class PgPaymentRequest:
                 )
             ),
             expire_after=expire_after,
+            device_os=device_os
         )
-        request.device_os = device_os
-        return request
 
     @staticmethod
     def build_upi_collect_pay_via_phone_number_request(
@@ -227,7 +233,7 @@ class PgPaymentRequest:
         PgPaymentRequest
             The constructed payment request object.
         """
-        request = PgPaymentRequest(
+        return PgPaymentRequest(
             merchant_order_id=merchant_order_id,
             amount=amount,
             meta_info=meta_info,
@@ -239,9 +245,8 @@ class PgPaymentRequest:
                 )
             ),
             expire_after=expire_after,
+            device_os=device_os
         )
-        request.device_os = device_os
-        return request
 
     @staticmethod
     def build_upi_qr_pay_request(
