@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List
+from typing import List, Optional
 from dataclasses import dataclass, field
-from dataclasses_json import dataclass_json, LetterCase
+from dataclasses_json import dataclass_json, LetterCase, config
 
 from phonepe.sdk.pg.common.models.request.payment_flow import PaymentFlow
 from phonepe.sdk.pg.common.models.request.device_context import DeviceContext
@@ -87,6 +87,14 @@ class PgPaymentRequest:
     expire_after: int = field(default=None)
     expire_at: int = field(default=None)
 
+    # The "x-device-os" request header is currently required only for UPI COLLECT transactions.
+    # Once the COLLECT payment instrument is fully disabled, as per the guidelines,
+    # this header will no longer be necessary, even for iOS devices.
+    # To streamline the request structure and avoid unnecessary complexity,
+    # this header is now being incorporated directly into the request builder
+    # instead of being managed as a separate value.
+    device_os: Optional[str] = field(default=None, metadata=config(exclude=lambda x: True))
+
     @staticmethod
     def build_upi_intent_pay_request(
         merchant_order_id: str,
@@ -148,6 +156,7 @@ class PgPaymentRequest:
         meta_info: MetaInfo = None,
         constraints: List[InstrumentConstraint] = None,
         expire_after: int = None,
+        device_os: str = None,
     ):
         """
         Builds a payment request for UPI collect payment via VPA (Virtual Payment Address).
@@ -185,6 +194,7 @@ class PgPaymentRequest:
                 )
             ),
             expire_after=expire_after,
+            device_os=device_os
         )
 
     @staticmethod
@@ -196,6 +206,7 @@ class PgPaymentRequest:
         meta_info: MetaInfo = None,
         constraints: List[InstrumentConstraint] = None,
         expire_after: int = None,
+        device_os: str = None,
     ):
         """
         Builds a payment request for UPI collect payment via phone number.
@@ -234,6 +245,7 @@ class PgPaymentRequest:
                 )
             ),
             expire_after=expire_after,
+            device_os=device_os
         )
 
     @staticmethod

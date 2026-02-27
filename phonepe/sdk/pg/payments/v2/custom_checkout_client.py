@@ -31,6 +31,7 @@ from phonepe.sdk.pg.common.events.models.enums.flow_type import FlowType
 from phonepe.sdk.pg.common.exceptions import PhonePeException
 from phonepe.sdk.pg.common.http_client_modules.http_method_type import HttpMethodType
 from phonepe.sdk.pg.common.models.request.pg_payment_request import PgPaymentRequest
+from phonepe.sdk.pg.common.constants.headers import X_DEVICE_OS
 from phonepe.sdk.pg.common.models.response.pg_payment_response import PgPaymentResponse
 from phonepe.sdk.pg.common.utils.hash_utils import calculate_hash, is_callback_valid
 from phonepe.sdk.pg.env import Env
@@ -149,11 +150,13 @@ class CustomCheckoutClient(BaseClient):
             contains instrument related details
         """
         try:
+            extra_headers = {X_DEVICE_OS: pay_request.device_os} if pay_request.device_os else {}
             response = self._request_via_auth_refresh(
                 method=HttpMethodType.POST,
                 url=PAY_API,
                 data=pay_request.to_json(),
                 response_obj=PgPaymentResponse,
+                headers=extra_headers,
             )
             self.event_publisher.send(
                 build_custom_checkout_pay_event(
