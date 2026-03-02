@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Package for integration with PhonePe APIs"""
+from dataclasses import dataclass, field
 
-__version__ = "2.1.8"
+from dataclasses_json import dataclass_json, LetterCase
+
+
+@dataclass_json(letter_case=LetterCase.CAMEL)
+@dataclass
+class PrefillUserLoginDetails:
+    phone_number: str = field(default=None)

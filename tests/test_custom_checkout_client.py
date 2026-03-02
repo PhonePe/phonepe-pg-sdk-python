@@ -27,7 +27,8 @@ from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.common.models.response.order_status_response import OrderStatusResponse
 
 from phonepe.sdk.pg.env import Env, get_pg_base_url, get_oauth_base_url
-from phonepe.sdk.pg.payments.v2.custom_checkout.custom_checkout_constants import ORDER_STATUS_API
+from phonepe.sdk.pg.payments.v2.custom_checkout.custom_checkout_constants import ORDER_STATUS_API, PAY_API
+from phonepe.sdk.pg.common.models.request.pg_payment_request import PgPaymentRequest
 from phonepe.sdk.pg.common.models.request.meta_info import MetaInfo
 from phonepe.sdk.pg.payments.v2.models.request.pg_v2_instrument_type import PgV2InstrumentType
 from phonepe.sdk.pg.payments.v2.models.response.payment_detail import PaymentDetail
@@ -180,3 +181,75 @@ class TestCustomCheckoutClient(TestCase):
                                                                                        split_instruments=None)])
         assert len(responses.calls) == 3
         assert response_object == expected_order_status_obj
+
+
+class TestCustomCheckoutXDeviceOs(BaseCustomCheckoutClientForTest):
+
+    def set_first_token_mock(self):
+        from time import time
+        cur_time = int(time())
+        token_response_data = f"""{{
+            "access_token": "new_token_generated_from_backend",
+            "encrypted_access_token": "encrypted_access_token",
+            "refresh_token": "refresh_token",
+            "expires_in": 200,
+            "issued_at": {cur_time},
+            "expires_at": {int(cur_time + 10)},
+            "session_expires_at": 1709630316,
+            "token_type": "O-Bearer"
+        }}
+        """
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                      json=json.loads(token_response_data))
+
+    pay_response_string = """{"orderId": "OMO2403071446458436434329", "state": "PENDING", "expireAt": 1709803425841}"""
+
+    @responses.activate
+    def test_upi_collect_pay_sends_x_device_os_header(self):
+        self.set_first_token_mock()
+        responses.add(
+            responses.POST,
+            get_pg_base_url(Env.SANDBOX) + PAY_API,
+            status=200,
+            json=json.loads(self.pay_response_string),
+            match=[matchers.header_matcher({"x-device-os": "ANDROID"})],
+        )
+        request = PgPaymentRequest.build_upi_collect_pay_via_vpa_request(
+            merchant_order_id="MOID01",
+            amount=1000,
+            vpa="test@upi",
+            message="Pay now",
+            device_os="ANDROID",
+        )
+        response = self.custom_checkout_client.pay(request)
+        assert response is not None
+
+    @responses.activate
+    def test_upi_collect_pay_without_x_device_os_header(self):
+        self.set_first_token_mock()
+        responses.add(
+            responses.POST,
+            get_pg_base_url(Env.SANDBOX) + PAY_API,
+            status=200,
+            json=json.loads(self.pay_response_string),
+        )
+        request = PgPaymentRequest.build_upi_collect_pay_via_vpa_request(
+            merchant_order_id="MOID01",
+            amount=1000,
+            vpa="test@upi",
+            message="Pay now",
+        )
+        response = self.custom_checkout_client.pay(request)
+        assert response is not None
+
+    def test_upi_collect_x_device_os_not_in_json_body(self):
+        request = PgPaymentRequest.build_upi_collect_pay_via_vpa_request(
+            merchant_order_id="MOID01",
+            amount=1000,
+            vpa="test@upi",
+            message="Pay now",
+            device_os="ANDROID",
+        )
+        request_json = request.to_json()
+        assert "device_os" not in request_json
+        assert "DeviceOs" not in request_json
