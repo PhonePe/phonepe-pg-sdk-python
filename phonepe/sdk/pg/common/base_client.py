@@ -39,7 +39,7 @@ from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttp
 from phonepe.sdk.pg.common.http_client_modules.http_method_type import HttpMethodType
 from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.common.utils.dict_utils import merge_dict
-from phonepe.sdk.pg.env import Env, get_pg_base_url, get_event_ingestion_base_url
+from phonepe.sdk.pg.env import Env, get_pg_base_url, get_event_ingestion_base_url, get_pci_pg_base_url
 
 
 class BaseClient:
@@ -60,6 +60,7 @@ class BaseClient:
         )
 
         self._http_command = BaseHttpCommand(get_pg_base_url(self.env))
+        self._pci_http_command = BaseHttpCommand(get_pci_pg_base_url(self.env))
         self.should_publish_events = should_publish_events
         self._event_publisher_factory = EventPublisherFactory(
             event_sender=BaseHttpCommand(host_url=get_event_ingestion_base_url(env))
@@ -84,9 +85,11 @@ class BaseClient:
         headers: dict = {},
         path_params: dict = None,
         data: dict = None,
+        http_command: "BaseHttpCommand" = None,
     ):
+        command = http_command if http_command is not None else self._http_command
         try:
-            response_data = self._http_command.request(
+            response_data = command.request(
                 method=method,
                 url=url,
                 headers=merge_dict(self._prepare_headers(), headers),

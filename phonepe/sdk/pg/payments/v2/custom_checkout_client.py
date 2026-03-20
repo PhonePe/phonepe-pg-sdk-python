@@ -61,6 +61,9 @@ from phonepe.sdk.pg.common.models.response.refund_status_response import (
 )
 
 from typing import Dict
+from phonepe.sdk.pg.payments.v2.models.request.pg_v2_instrument_type import PgV2InstrumentType
+
+_PCI_INSTRUMENT_TYPES = {PgV2InstrumentType.CARD, PgV2InstrumentType.TOKEN}
 
 
 class CustomCheckoutClient(BaseClient):
@@ -151,12 +154,25 @@ class CustomCheckoutClient(BaseClient):
         """
         try:
             extra_headers = {X_DEVICE_OS: pay_request.device_os} if pay_request.device_os else {}
+            # Route CARD and TOKEN instruments through the PCI-scoped host
+            payment_mode = (
+                pay_request.payment_flow.payment_mode
+                if pay_request.payment_flow is not None
+                else None
+            )
+            instrument_type = getattr(payment_mode, "type", None)
+            http_command = (
+                self._pci_http_command
+                if instrument_type in _PCI_INSTRUMENT_TYPES
+                else None
+            )
             response = self._request_via_auth_refresh(
                 method=HttpMethodType.POST,
                 url=PAY_API,
                 data=pay_request.to_json(),
                 response_obj=PgPaymentResponse,
                 headers=extra_headers,
+                http_command=http_command,
             )
             self.event_publisher.send(
                 build_custom_checkout_pay_event(
