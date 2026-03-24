@@ -53,3 +53,47 @@ class TestMetaInfo(TestCase):
         data = meta.to_dict()
         self.assertEqual(data.get("udf6"), "six")
         self.assertEqual(data.get("udf15"), "fifteen")
+
+    # --- Validation tests ---
+
+    def test_udf1_to_10_max_256_chars_is_accepted(self):
+        val = "a" * 256
+        meta = MetaInfo.build_meta_info(udf1=val, udf10=val)
+        self.assertEqual(meta.udf1, val)
+
+    def test_udf1_exceeds_256_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            MetaInfo.build_meta_info(udf1="a" * 257)
+        self.assertIn("udf1", str(ctx.exception))
+
+    def test_udf10_exceeds_256_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            MetaInfo.build_meta_info(udf1="ok", udf10="b" * 257)
+        self.assertIn("udf10", str(ctx.exception))
+
+    def test_udf11_max_50_chars_is_accepted(self):
+        meta = MetaInfo.build_meta_info(udf1="ok", udf11="a" * 50)
+        self.assertEqual(len(meta.udf11), 50)
+
+    def test_udf11_exceeds_50_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            MetaInfo.build_meta_info(udf1="ok", udf11="a" * 51)
+        self.assertIn("udf11", str(ctx.exception))
+
+    def test_udf15_invalid_pattern_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            MetaInfo.build_meta_info(udf1="ok", udf15="invalid!")
+        self.assertIn("udf15", str(ctx.exception))
+
+    def test_udf11_valid_pattern_accepted(self):
+        meta = MetaInfo.build_meta_info(udf1="ok", udf11="Valid_value-123 @.+")
+        self.assertEqual(meta.udf11, "Valid_value-123 @.+")
+
+    def test_udf1_to_10_no_pattern_restriction(self):
+        meta = MetaInfo.build_meta_info(udf1="hello!@#$%^&*()")
+        self.assertEqual(meta.udf1, "hello!@#$%^&*()")
+
+    def test_null_fields_always_allowed(self):
+        meta = MetaInfo.build_meta_info(udf1="ok", udf11=None, udf15=None)
+        self.assertIsNone(meta.udf11)
+        self.assertIsNone(meta.udf15)
