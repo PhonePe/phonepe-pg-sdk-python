@@ -156,7 +156,7 @@ class CustomCheckoutClient(BaseClient):
             extra_headers = {X_DEVICE_OS: pay_request.device_os} if pay_request.device_os else {}
             # Route CARD and TOKEN instruments through the PCI-scoped host
             payment_mode = (
-                pay_request.payment_flow.payment_mode
+                getattr(pay_request.payment_flow, "payment_mode", None)
                 if pay_request.payment_flow is not None
                 else None
             )
