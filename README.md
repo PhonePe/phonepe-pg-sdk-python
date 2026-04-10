@@ -7,7 +7,7 @@ A python library for integrating with PhonePe APIs.
 Requires `python 3.9` or later
 
 ```ssh
-pip install --index-url https://phonepe.mycloudrepo.io/public/repositories/phonepe-pg-sdk-python  --extra-index-url https://pypi.org/simple phonepe_sdk
+pip install phonepe-pg-sdk-python
 ```    
 
 ## Quick start
