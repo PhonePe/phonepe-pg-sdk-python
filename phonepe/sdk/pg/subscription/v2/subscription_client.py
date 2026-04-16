@@ -182,7 +182,7 @@ class SubscriptionClient(BaseClient):
         url = SETUP_API
         headers = self.headers
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.POST,
                 data=request.to_json(),
                 url=url,
@@ -227,7 +227,7 @@ class SubscriptionClient(BaseClient):
         url = NOTIFY_API
         headers = self.headers
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.POST,
                 data=request.to_json(),
                 url=url,
@@ -273,7 +273,7 @@ class SubscriptionClient(BaseClient):
         headers = self.headers
         try:
             request = SubscriptionRedeemRequestV2(merchant_order_id)
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.POST,
                 data=request.to_json(),
                 url=url,
@@ -322,7 +322,7 @@ class SubscriptionClient(BaseClient):
         )
         headers = self.headers
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.GET,
                 url=url,
                 headers=headers,
@@ -366,7 +366,7 @@ class SubscriptionClient(BaseClient):
         url = ORDER_STATUS_API.format(merchant_order_id=merchant_order_id)
         headers = self.headers
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.GET,
                 url=url,
                 headers=headers,
@@ -412,7 +412,7 @@ class SubscriptionClient(BaseClient):
         url = TRANSACTION_STATUS_API.format(transaction_id=transaction_id)
         headers = self.headers
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.GET,
                 url=url,
                 headers=headers,
@@ -455,7 +455,7 @@ class SubscriptionClient(BaseClient):
         )
         headers = self.headers
         try:
-            self._request_via_auth_refresh(
+            self._request_with_token_invalidation(
                 method=HttpMethodType.POST, url=url, headers=headers, response_obj=None
             )
             self.event_publisher.send(
@@ -495,7 +495,7 @@ class SubscriptionClient(BaseClient):
         url = REFUND_API
         headers = self.headers
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.POST,
                 url=url,
                 headers=headers,
@@ -549,7 +549,7 @@ class SubscriptionClient(BaseClient):
         )
         headers = self.headers
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.GET,
                 url=refund_status_url,
                 headers=headers,

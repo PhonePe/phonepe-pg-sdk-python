@@ -18,29 +18,37 @@ from typing import Optional
 
 from dataclasses_json import dataclass_json, LetterCase, config
 
+_EXCLUDE_NONE = config(exclude=lambda x: x is None)
+
 
 @dataclass_json(letter_case=LetterCase.CAMEL)
 @dataclass
 class MetaInfo:
-    udf1: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf2: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf3: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf4: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf5: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf6: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf7: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf8: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf9: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf10: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf11: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf12: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf13: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf14: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
-    udf15: Optional[str] = field(default=None, metadata=config(exclude=lambda x: x is None))
+    udf1: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf2: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf3: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf4: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf5: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf6: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf7: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf8: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf9: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf10: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf11: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf12: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf13: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf14: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
+    udf15: Optional[str] = field(default=None, metadata=_EXCLUDE_NONE)
 
     _FREE_MAX = 256
     _RESTRICTED_MAX = 50
     _RESTRICTED_PATTERN = re.compile(r'^[a-zA-Z0-9_\- @.+]*$')
+
+    def __post_init__(self):
+        for i in range(1, 11):
+            MetaInfo._validate_size(f"udf{i}", getattr(self, f"udf{i}"), MetaInfo._FREE_MAX)
+        for i in range(11, 16):
+            MetaInfo._validate_size_and_pattern(f"udf{i}", getattr(self, f"udf{i}"), MetaInfo._RESTRICTED_MAX)
 
     @staticmethod
     def _validate_size(field_name: str, value: str, max_len: int):
@@ -76,21 +84,11 @@ class MetaInfo:
         udf14: str = None,
         udf15: str = None,
     ):
-        MetaInfo._validate_size("udf1", udf1, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size("udf2", udf2, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size("udf3", udf3, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size("udf4", udf4, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size("udf5", udf5, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size("udf6", udf6, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size("udf7", udf7, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size("udf8", udf8, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size("udf9", udf9, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size("udf10", udf10, MetaInfo._FREE_MAX)
-        MetaInfo._validate_size_and_pattern("udf11", udf11, MetaInfo._RESTRICTED_MAX)
-        MetaInfo._validate_size_and_pattern("udf12", udf12, MetaInfo._RESTRICTED_MAX)
-        MetaInfo._validate_size_and_pattern("udf13", udf13, MetaInfo._RESTRICTED_MAX)
-        MetaInfo._validate_size_and_pattern("udf14", udf14, MetaInfo._RESTRICTED_MAX)
-        MetaInfo._validate_size_and_pattern("udf15", udf15, MetaInfo._RESTRICTED_MAX)
+        fields = locals()
+        for i in range(1, 11):
+            MetaInfo._validate_size(f"udf{i}", fields[f"udf{i}"], MetaInfo._FREE_MAX)
+        for i in range(11, 16):
+            MetaInfo._validate_size_and_pattern(f"udf{i}", fields[f"udf{i}"], MetaInfo._RESTRICTED_MAX)
         return MetaInfo(
             udf1=udf1, udf2=udf2, udf3=udf3, udf4=udf4, udf5=udf5,
             udf6=udf6, udf7=udf7, udf8=udf8, udf9=udf9, udf10=udf10,

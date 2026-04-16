@@ -63,15 +63,13 @@ from phonepe.sdk.pg.common.models.response.refund_status_response import (
 from typing import Dict
 from phonepe.sdk.pg.payments.v2.models.request.pg_v2_instrument_type import PgV2InstrumentType
 
-_PCI_INSTRUMENT_TYPES = {PgV2InstrumentType.CARD, PgV2InstrumentType.TOKEN}
-
-
 class CustomCheckoutClient(BaseClient):
     """
     The CustomCheckoutClient client class provides methods for interacting with the PhonePe APIs.
     """
 
     _cached_instances: Dict[str, BaseClient] = {}
+    _PCI_INSTRUMENT_TYPES = {PgV2InstrumentType.CARD, PgV2InstrumentType.TOKEN}
 
     def __init__(
         self,
@@ -163,10 +161,10 @@ class CustomCheckoutClient(BaseClient):
             instrument_type = getattr(payment_mode, "type", None)
             http_command = (
                 self._pci_http_command
-                if instrument_type in _PCI_INSTRUMENT_TYPES
+                if instrument_type in self._PCI_INSTRUMENT_TYPES
                 else None
             )
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.POST,
                 url=PAY_API,
                 data=pay_request.to_json(),
@@ -216,7 +214,7 @@ class CustomCheckoutClient(BaseClient):
         """
         order_status_url = ORDER_STATUS_API.format(merchant_order_id=merchant_order_id)
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.GET,
                 url=order_status_url,
                 path_params={ORDER_DETAILS: details},
@@ -306,7 +304,7 @@ class CustomCheckoutClient(BaseClient):
             merchant_refund_id=merchant_refund_id
         )
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.GET,
                 url=refund_status_url,
                 response_obj=RefundStatusResponse,
@@ -352,7 +350,7 @@ class CustomCheckoutClient(BaseClient):
             transaction_id=transaction_id
         )
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.GET,
                 url=transaction_status_url,
                 response_obj=OrderStatusResponse,
@@ -395,7 +393,7 @@ class CustomCheckoutClient(BaseClient):
             contains refund details for an order
         """
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.POST,
                 url=REFUND_API,
                 data=refund_request.to_json(),
@@ -441,7 +439,7 @@ class CustomCheckoutClient(BaseClient):
             contains token details to be consumed by the UI
         """
         try:
-            response = self._request_via_auth_refresh(
+            response = self._request_with_token_invalidation(
                 method=HttpMethodType.POST,
                 url=CREATE_ORDER_API,
                 data=sdk_order_request.to_json(),

@@ -77,7 +77,7 @@ class BaseClient:
             auth_token_supplier=self._token_service.get_auth_token
         )
 
-    def _request_via_auth_refresh(
+    def _request_with_token_invalidation(
         self,
         method: HttpMethodType,
         url: str,
@@ -87,6 +87,10 @@ class BaseClient:
         data: dict = None,
         http_command: "BaseHttpCommand" = None,
     ):
+        # On UnauthorizedAccess the token cache is invalidated so the next call
+        # fetches a fresh token. This method does NOT retry the request itself.
+        # If a retry is added in future, use `command` (not `self._http_command`)
+        # so PCI-scoped calls are not silently downgraded to the standard host.
         command = http_command if http_command is not None else self._http_command
         try:
             response_data = command.request(
