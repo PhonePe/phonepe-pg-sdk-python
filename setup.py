@@ -50,7 +50,7 @@ setup(
     description='SDK for integration with PhonePe PG APIs',
     packages=find_packages(),
     install_requires=[
-        'APScheduler <= 3.11.2',
+        'APScheduler>=3.10.2,<=3.11.2'
         'dataclasses-json <= 0.5.8',
         'requests <= 2.31.0',
         'urllib3 <= 1.26.12',
