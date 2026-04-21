@@ -16,6 +16,9 @@
 PROD_PG_BASE_URL = "https://api.phonepe.com/apis/pg"
 SANDBOX_PG_BASE_URL = "https://api-preprod.phonepe.com/apis/pg-sandbox"
 
+# PCI PG constants (card-scoped host for PCI compliance)
+PROD_PCI_PG_BASE_URL = "https://cards.phonepe.com/apis/pg"
+
 # Oauth constants
 PROD_OAUTH_BASE_URL = "https://api.phonepe.com/apis/identity-manager"
 SANDBOX_OAUTH_BASE_URL = "https://api-preprod.phonepe.com/apis/pg-sandbox"

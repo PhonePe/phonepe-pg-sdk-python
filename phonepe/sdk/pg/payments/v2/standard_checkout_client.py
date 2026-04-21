@@ -104,7 +104,7 @@ class StandardCheckoutClient(BaseClient):
             contains checkout page url and related details
         """
         try:
-            response = self._request_via_auth_refresh(method=HttpMethodType.POST,
+            response = self._request_with_token_invalidation(method=HttpMethodType.POST,
                                                       url=PAY_API,
                                                       data=pay_request.to_json(),
                                                       response_obj=StandardCheckoutPayResponse)
@@ -140,7 +140,7 @@ class StandardCheckoutClient(BaseClient):
         """
         order_status_url = ORDER_STATUS_API.format(merchant_order_id=merchant_order_id)
         try:
-            response = self._request_via_auth_refresh(method=HttpMethodType.GET,
+            response = self._request_with_token_invalidation(method=HttpMethodType.GET,
                                                       url=order_status_url,
                                                       path_params={ORDER_DETAILS: details},
                                                       response_obj=OrderStatusResponse)
@@ -209,7 +209,7 @@ class StandardCheckoutClient(BaseClient):
         """
         refund_status_url = REFUND_STATUS_API.format(merchant_refund_id=merchant_refund_id)
         try:
-            response = self._request_via_auth_refresh(method=HttpMethodType.GET,
+            response = self._request_with_token_invalidation(method=HttpMethodType.GET,
                                                       url=refund_status_url,
                                                       response_obj=RefundStatusResponse)
             self.event_publisher.send(build_refund_status_event(event_state=EventState.SUCCESS,
@@ -243,7 +243,7 @@ class StandardCheckoutClient(BaseClient):
         """
         transaction_status_url = TRANSACTION_STATUS_API.format(transaction_id=transaction_id)
         try:
-            response = self._request_via_auth_refresh(method=HttpMethodType.GET,
+            response = self._request_with_token_invalidation(method=HttpMethodType.GET,
                                                       url=transaction_status_url,
                                                       response_obj=OrderStatusResponse)
             self.event_publisher.send(build_transaction_status_event(event_state=EventState.SUCCESS,
@@ -276,7 +276,7 @@ class StandardCheckoutClient(BaseClient):
             contains refund details for an order
         """
         try:
-            response = self._request_via_auth_refresh(method=HttpMethodType.POST,
+            response = self._request_with_token_invalidation(method=HttpMethodType.POST,
                                                       url=REFUND_API,
                                                       data=refund_request.to_json(),
                                                       response_obj=RefundResponse)
@@ -310,7 +310,7 @@ class StandardCheckoutClient(BaseClient):
             contains token details to be consumed by the UI
         """
         try:
-            response = self._request_via_auth_refresh(method=HttpMethodType.POST,
+            response = self._request_with_token_invalidation(method=HttpMethodType.POST,
                                                       url=CREATE_ORDER_API,
                                                       data=sdk_order_request.to_json(),
                                                       response_obj=CreateSdkOrderResponse)

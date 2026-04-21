@@ -15,7 +15,8 @@
 from enum import Enum
 
 from phonepe.sdk.pg.common.constants.base_urls import PROD_PG_BASE_URL, SANDBOX_PG_BASE_URL, \
-    PROD_OAUTH_BASE_URL, SANDBOX_OAUTH_BASE_URL, PROD_EVENT_INGESTION_BASE_URL, SANDBOX_EVENT_INGESTION_BASE_URL
+    PROD_OAUTH_BASE_URL, SANDBOX_OAUTH_BASE_URL, PROD_EVENT_INGESTION_BASE_URL, SANDBOX_EVENT_INGESTION_BASE_URL, \
+    PROD_PCI_PG_BASE_URL
 
 
 class Env(Enum):
@@ -24,6 +25,12 @@ class Env(Enum):
 
     def __eq__(self, other):
         return self.__class__ is other.__class__ and other.value == self.value
+
+
+def get_pci_pg_base_url(env: Env):
+    if env == Env.PRODUCTION:
+        return PROD_PCI_PG_BASE_URL
+    return SANDBOX_PG_BASE_URL
 
 
 def get_pg_base_url(env: Env):

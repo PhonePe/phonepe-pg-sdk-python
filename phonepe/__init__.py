@@ -14,4 +14,4 @@
 
 """Package for integration with PhonePe APIs"""
 
-__version__ = "2.1.8"
+__version__ = "2.1.9"
