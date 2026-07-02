@@ -15,13 +15,14 @@
 import json
 from time import time
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import responses
 
 from phonepe.sdk.pg.common.configs.credential_config import CredentialConfig
+from phonepe.sdk.pg.common.events.models.enums.event_type import EventType
 from phonepe.sdk.pg.common.events.publisher.event_publisher import EventPublisher
-from phonepe.sdk.pg.common.exceptions import PhonePeException
+from phonepe.sdk.pg.common.exceptions import BadRequest, PhonePeException, ServerError, TooManyRequests, UnauthorizedAccess
 from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
 from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.env import Env, get_oauth_base_url
@@ -247,6 +248,174 @@ class TestTokenService(TestCase):
         assert "O-Bearer access_token" == should_receive_old_token2
         assert "O-Bearer access_token" == should_receive_old_token3
         assert len(responses.calls) == 4  # (1 set token, 3 attempts to fetch new token but failed)
+
+    def test_max_retries_constant(self):
+        # Guards against accidental changes to the configured retry budget
+        assert TokenService.MAX_RETRIES == 3
+
+    @responses.activate
+    def test_retry_succeeds_after_transient_failures_when_no_cached_token(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        token_response_data = """{
+                                    "access_token": "access_token",
+                                    "encrypted_access_token": "encrypted_access_token",
+                                    "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
+                                    "expires_in": 5014,
+                                    "issued_at": 1709623116,
+                                    "expires_at": 1709630316,
+                                    "session_expires_at": 1709630316,
+                                    "token_type": "O-Bearer"
+                                }"""
+        # First two attempts fail with a transient server error, third succeeds
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                      json=json.loads(token_response_data))
+
+        token = token_service.get_auth_token()
+
+        assert token == "O-Bearer access_token"
+        assert len(responses.calls) == 3  # 2 failed retries + 1 successful attempt
+        assert token_service.cached_token_data is not None
+
+    @responses.activate
+    def test_retry_exhausted_raises_when_no_cached_token(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        for _ in range(TokenService.MAX_RETRIES):
+            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
+
+        self.assertRaises(ServerError, token_service.get_auth_token)
+
+        assert len(responses.calls) == TokenService.MAX_RETRIES  # exactly MAX_RETRIES attempts, no more
+        assert token_service.cached_token_data is None
+
+    @responses.activate
+    def test_retry_exhausted_publishes_none_cached_token_event(self):
+        mock_event_publisher = MagicMock(spec=EventPublisher)
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=mock_event_publisher)
+        # reset the mock so the TOKEN_SERVICE_INITIALIZED init event doesn't interfere with assertions below
+        mock_event_publisher.send.reset_mock()
+
+        for _ in range(TokenService.MAX_RETRIES):
+            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
+
+        self.assertRaises(ServerError, token_service.get_auth_token)
+
+        published_event_names = [call.args[0].event_name for call in mock_event_publisher.send.call_args_list]
+        assert EventType.OAUTH_FETCH_FAILED_NONE_CACHED_TOKEN in published_event_names
+
+    @responses.activate
+    def test_no_retry_when_cached_token_exists_and_refresh_fails(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        cur_time = int(time())
+        two_sec_less_cur = int(cur_time - 2)
+
+        token_response_data = f"""{{
+                "access_token": "access_token",
+                "encrypted_access_token": "encrypted_access_token",
+                "refresh_token": "refresh_token",
+                "expires_in": 200,
+                "issued_at": {two_sec_less_cur},
+                "expires_at": {cur_time},
+                "session_expires_at": 1709630316,
+                "token_type": "O-Bearer"
+            }}
+            """  # already expired, so next get_auth_token triggers a refresh
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                      json=json.loads(token_response_data))
+
+        token_service.get_auth_token()  # sets the cached (already expired) token
+        assert len(responses.calls) == 1
+
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
+
+        token = token_service.get_auth_token()  # refresh fails, falls back to cached token, no retries
+
+        assert token == "O-Bearer access_token"
+        # If the SDK retried on this path (like it does when there's no cached token),
+        # this would be 1 (initial) + MAX_RETRIES (3) = 4 calls instead of 2.
+        assert len(responses.calls) == 2  # 1 initial fetch + exactly 1 failed refresh attempt (no retries)
+
+    @responses.activate
+    def test_no_retry_on_bad_request_when_no_cached_token(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        # e.g. "form field grant_type must not be blank." - retrying won't fix a malformed request
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=400,
+                      json={"success": False, "code": "BAD_REQUEST", "message": "form field grant_type must not be blank.", "data": {}})
+
+        self.assertRaises(BadRequest, token_service.get_auth_token)
+
+        assert len(responses.calls) == 1  # fails fast, no retries for a genuine bad request
+        assert token_service.cached_token_data is None
+
+    @responses.activate
+    def test_no_retry_on_unauthorized_when_no_cached_token(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        # e.g. invalid client_id/client_secret - retrying with the same credentials will always fail
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=401,
+                      json={"success": False, "code": "401"})
+
+        self.assertRaises(UnauthorizedAccess, token_service.get_auth_token)
+
+        assert len(responses.calls) == 1  # fails fast, no retries for invalid credentials
+        assert token_service.cached_token_data is None
+
+    @responses.activate
+    def test_retries_on_too_many_requests_when_no_cached_token(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        token_response_data = """{
+                                    "access_token": "access_token",
+                                    "encrypted_access_token": "encrypted_access_token",
+                                    "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
+                                    "expires_in": 5014,
+                                    "issued_at": 1709623116,
+                                    "expires_at": 1709630316,
+                                    "session_expires_at": 1709630316,
+                                    "token_type": "O-Bearer"
+                                }"""
+        # 429 (rate limited) is transient, unlike other 4xx errors, so it should still be retried
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=429)
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                      json=json.loads(token_response_data))
+
+        token = token_service.get_auth_token()
+
+        assert token == "O-Bearer access_token"
+        assert len(responses.calls) == 2  # 1 rate-limited attempt + 1 successful retry
+
+    @responses.activate
+    def test_too_many_requests_exhausted_raises_when_no_cached_token(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        for _ in range(TokenService.MAX_RETRIES):
+            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=429)
+
+        self.assertRaises(TooManyRequests, token_service.get_auth_token)
+
+        assert len(responses.calls) == TokenService.MAX_RETRIES
 
     def test_static(self):
         instance = StandardCheckoutClient.get_instance(
