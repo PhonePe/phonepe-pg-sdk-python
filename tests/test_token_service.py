@@ -15,7 +15,7 @@
 import json
 from time import time
 from unittest import TestCase
-from unittest.mock import patch, MagicMock
+from unittest.mock import call, patch, MagicMock
 
 import responses
 
@@ -254,7 +254,8 @@ class TestTokenService(TestCase):
         assert TokenService.MAX_RETRIES == 3
 
     @responses.activate
-    def test_retry_succeeds_after_transient_failures_when_no_cached_token(self):
+    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    def test_retry_succeeds_after_transient_failures_when_no_cached_token(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
@@ -280,9 +281,12 @@ class TestTokenService(TestCase):
         assert token == "O-Bearer access_token"
         assert len(responses.calls) == 3  # 2 failed retries + 1 successful attempt
         assert token_service.cached_token_data is not None
+        # backoff sleeps between the 2 failed attempts (1s, then 2s), none after the final success
+        assert mock_sleep.call_args_list == [call(1), call(2)]
 
     @responses.activate
-    def test_retry_exhausted_raises_when_no_cached_token(self):
+    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    def test_retry_exhausted_raises_when_no_cached_token(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
@@ -294,9 +298,12 @@ class TestTokenService(TestCase):
 
         assert len(responses.calls) == TokenService.MAX_RETRIES  # exactly MAX_RETRIES attempts, no more
         assert token_service.cached_token_data is None
+        # no sleep after the final (3rd) failed attempt since we're about to give up
+        assert mock_sleep.call_args_list == [call(1), call(2)]
 
     @responses.activate
-    def test_retry_exhausted_publishes_none_cached_token_event(self):
+    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    def test_retry_exhausted_publishes_none_cached_token_event(self, mock_sleep):
         mock_event_publisher = MagicMock(spec=EventPublisher)
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
@@ -379,7 +386,8 @@ class TestTokenService(TestCase):
         assert token_service.cached_token_data is None
 
     @responses.activate
-    def test_retries_on_too_many_requests_when_no_cached_token(self):
+    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    def test_retries_on_too_many_requests_when_no_cached_token(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
@@ -403,9 +411,11 @@ class TestTokenService(TestCase):
 
         assert token == "O-Bearer access_token"
         assert len(responses.calls) == 2  # 1 rate-limited attempt + 1 successful retry
+        assert mock_sleep.call_args_list == [call(1)]  # 1s backoff before the retry
 
     @responses.activate
-    def test_too_many_requests_exhausted_raises_when_no_cached_token(self):
+    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    def test_too_many_requests_exhausted_raises_when_no_cached_token(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
@@ -416,6 +426,65 @@ class TestTokenService(TestCase):
         self.assertRaises(TooManyRequests, token_service.get_auth_token)
 
         assert len(responses.calls) == TokenService.MAX_RETRIES
+        assert mock_sleep.call_args_list == [call(1), call(2)]
+
+    def test_retry_backoff_delay_is_exponential(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        assert token_service._get_retry_delay(1) == 1
+        assert token_service._get_retry_delay(2) == 2
+        assert token_service._get_retry_delay(3) == 4
+
+    def test_should_retry_token_fetch_defaults_to_true(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        assert token_service.should_retry_token_fetch is True
+
+    @responses.activate
+    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    def test_no_retry_when_should_retry_token_fetch_is_false(self, mock_sleep):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher(),
+                                     should_retry_token_fetch=False)
+        for _ in range(TokenService.MAX_RETRIES):
+            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
+
+        self.assertRaises(ServerError, token_service.get_auth_token)
+
+        assert len(responses.calls) == 1  # opted out of retries, so only 1 attempt is made
+        mock_sleep.assert_not_called()
+        assert token_service.cached_token_data is None
+
+    @responses.activate
+    def test_first_fetch_succeeds_when_should_retry_token_fetch_is_false(self):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher(),
+                                     should_retry_token_fetch=False)
+        token_response_data = """{
+                                    "access_token": "access_token",
+                                    "encrypted_access_token": "encrypted_access_token",
+                                    "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
+                                    "expires_in": 5014,
+                                    "issued_at": 1709623116,
+                                    "expires_at": 1709630316,
+                                    "session_expires_at": 1709630316,
+                                    "token_type": "O-Bearer"
+                                }"""
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                      json=json.loads(token_response_data))
+
+        token = token_service.get_auth_token()
+
+        assert token == "O-Bearer access_token"
+        assert len(responses.calls) == 1
 
     def test_static(self):
         instance = StandardCheckoutClient.get_instance(

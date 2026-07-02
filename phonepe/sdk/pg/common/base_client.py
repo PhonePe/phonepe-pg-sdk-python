@@ -51,6 +51,7 @@ class BaseClient:
         client_version: int,
         env: Env,
         should_publish_events: bool = True,
+        should_retry_token_fetch: bool = True,
     ):
         self.env = env
         self.credential_config = CredentialConfig(
@@ -72,6 +73,7 @@ class BaseClient:
             credential_config=self.credential_config,
             env=self.env,
             event_publisher=self.event_publisher,
+            should_retry_token_fetch=should_retry_token_fetch,
         )
         self.event_publisher.start_publishing_events(
             auth_token_supplier=self._token_service.get_auth_token

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import logging
-from time import time
+from time import sleep, time
 
 from phonepe.sdk.pg.common.configs.credential_config import CredentialConfig
 from phonepe.sdk.pg.common.constants.headers import (
@@ -49,10 +49,12 @@ class TokenService:
         credential_config: CredentialConfig,
         env: Env,
         event_publisher: EventPublisher,
+        should_retry_token_fetch: bool = True,
     ) -> None:
         self._credential_config = credential_config
         self._http_command = BaseHttpCommand(host_url=get_oauth_base_url(env))
         self.event_publisher = event_publisher
+        self.should_retry_token_fetch = should_retry_token_fetch
         self.event_publisher.send(
             build_init_client_event(event_name=EventType.TOKEN_SERVICE_INITIALIZED)
         )
@@ -74,6 +76,7 @@ class TokenService:
         return current_time < token_sdk_expiry_time
 
     MAX_RETRIES = 3
+    BASE_RETRY_DELAY_SECONDS = 1  # exponential backoff: 1s, 2s, 4s, ... before each subsequent retry
 
     def get_auth_token(self):
         if self._is_cached_token_valid():
@@ -83,7 +86,7 @@ class TokenService:
                 + self.cached_token_data.access_token
             )
         try:
-            if self.cached_token_data is None:
+            if self.cached_token_data is None and self.should_retry_token_fetch:
                 token_data = self._fetch_token_with_retries().json()
             else:
                 token_data = self.fetch_token_from_phonepe().json()
@@ -184,7 +187,19 @@ class TokenService:
                     f"exception={exception} | "
                     f"cause={getattr(exception, '__cause__', None)}"
                 )
+
+            if attempt < self.MAX_RETRIES:
+                delay = self._get_retry_delay(attempt)
+                logging.info(
+                    f"Waiting {delay}s before token fetch retry attempt {attempt + 1}/{self.MAX_RETRIES}"
+                )
+                sleep(delay)
+
         raise last_exception
+
+    def _get_retry_delay(self, attempt):
+        """Exponential backoff delay (in seconds) before the given retry attempt: 1s, 2s, 4s, ..."""
+        return self.BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
 
     def _prepare_oauth_headers(self):
         return {CONTENT_TYPE: X_WWW_FORM_URLENCODED, ACCEPT: APPLICATION_JSON}

@@ -78,10 +78,12 @@ class CustomCheckoutClient(BaseClient):
         client_secret: str,
         env: Env,
         should_publish_events: bool = True,
+        should_retry_token_fetch: bool = True,
     ):
         should_publish_events = should_publish_events and env == Env.PRODUCTION
         super().__init__(
-            client_id, client_secret, client_version, env, should_publish_events
+            client_id, client_secret, client_version, env, should_publish_events,
+            should_retry_token_fetch,
         )
 
     @staticmethod
@@ -91,6 +93,7 @@ class CustomCheckoutClient(BaseClient):
         client_version: int,
         env: Env,
         should_publish_events: bool = True,
+        should_retry_token_fetch: bool = True,
     ):
         """
         Init CustomCheckoutClient class with merchant-credentials
@@ -108,6 +111,11 @@ class CustomCheckoutClient(BaseClient):
             The default value is `Env.SANDBOX`
         should_publish_events: bool
             When true events are sent to PhonePe providing smoother experience
+        should_retry_token_fetch: bool
+            When true (default), the SDK retries fetching the OAuth token (with exponential backoff) on
+            transient failures (server errors, rate-limiting) when there is no cached token yet.
+            Set to false to disable this retry behaviour and fail immediately instead, e.g. if the
+            merchant already has their own retry/backoff strategy in place.
         """
         should_publish_events = should_publish_events and env == Env.PRODUCTION
         requested_client_sha = calculate_hash(
@@ -116,6 +124,7 @@ class CustomCheckoutClient(BaseClient):
             str(client_secret),
             str(env),
             str(should_publish_events),
+            str(should_retry_token_fetch),
             str(FlowType.PG),
         )
         if requested_client_sha in CustomCheckoutClient._cached_instances.keys():
@@ -127,6 +136,7 @@ class CustomCheckoutClient(BaseClient):
             client_secret=client_secret,
             env=env,
             should_publish_events=should_publish_events,
+            should_retry_token_fetch=should_retry_token_fetch,
         )
         CustomCheckoutClient._cached_instances[requested_client_sha] = new_instance
         init_event = build_init_client_event(

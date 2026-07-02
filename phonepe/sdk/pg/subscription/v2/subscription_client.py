@@ -87,6 +87,7 @@ class SubscriptionClient(BaseClient):
         client_secret: str,
         env: Env,
         should_publish_events: bool = True,
+        should_retry_token_fetch: bool = True,
     ):
         """
         Initialize the SubscriptionClient class.
@@ -103,10 +104,16 @@ class SubscriptionClient(BaseClient):
             Environment (SANDBOX or PRODUCTION)
         should_publish_events: bool
             Indicates if events should be published to PhonePe
+        should_retry_token_fetch: bool
+            When true (default), the SDK retries fetching the OAuth token (with exponential backoff) on
+            transient failures (server errors, rate-limiting) when there is no cached token yet.
+            Set to false to disable this retry behaviour and fail immediately instead, e.g. if the
+            merchant already has their own retry/backoff strategy in place.
         """
         should_publish_events = should_publish_events and env == Env.PRODUCTION
         super().__init__(
-            client_id, client_secret, client_version, env, should_publish_events
+            client_id, client_secret, client_version, env, should_publish_events,
+            should_retry_token_fetch,
         )
 
     @staticmethod
@@ -116,6 +123,7 @@ class SubscriptionClient(BaseClient):
         client_version: int,
         env: Env,
         should_publish_events: bool = True,
+        should_retry_token_fetch: bool = True,
     ):
         """
         Get or create an instance of SubscriptionClient class.
@@ -132,6 +140,11 @@ class SubscriptionClient(BaseClient):
             Environment (SANDBOX or PRODUCTION)
         should_publish_events: bool
             Indicates if events should be published to PhonePe
+        should_retry_token_fetch: bool
+            When true (default), the SDK retries fetching the OAuth token (with exponential backoff) on
+            transient failures (server errors, rate-limiting) when there is no cached token yet.
+            Set to false to disable this retry behaviour and fail immediately instead, e.g. if the
+            merchant already has their own retry/backoff strategy in place.
 
         Returns
         ----------
@@ -145,6 +158,7 @@ class SubscriptionClient(BaseClient):
             str(client_secret),
             str(env),
             str(should_publish_events),
+            str(should_retry_token_fetch),
             str(FlowType.SUBSCRIPTION),
         )
         if requested_client_sha in SubscriptionClient._cached_instances.keys():
@@ -156,6 +170,7 @@ class SubscriptionClient(BaseClient):
             client_secret=client_secret,
             env=env,
             should_publish_events=should_publish_events,
+            should_retry_token_fetch=should_retry_token_fetch,
         )
         SubscriptionClient._cached_instances[requested_client_sha] = new_instance
         init_event = build_init_client_event(
