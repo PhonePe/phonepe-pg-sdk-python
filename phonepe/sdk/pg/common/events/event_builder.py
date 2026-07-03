@@ -212,6 +212,24 @@ def build_transaction_status_event(
     return populate_phonepe_exception_fields(event, exception)
 
 
+def build_oauth_event_none_cached_token(
+    fetch_attempt_time: int,
+    api_path: str,
+    exception: Exception = None,
+):
+    event = BaseEvent(
+        event_name=EventType.OAUTH_FETCH_FAILED_NONE_CACHED_TOKEN,
+        event_time=int(time.time()),
+        data=EventData(
+            api_path=api_path,
+            event_state=EventState.FAILED,
+            token_fetch_attempt_timestamp=fetch_attempt_time,
+        ),
+    )
+
+    return populate_phonepe_exception_fields(event, exception)
+
+
 def build_oauth_event_used_cached_token_failed(
     cached_token_issued_at: int,
     cached_token_expires_at: int,
