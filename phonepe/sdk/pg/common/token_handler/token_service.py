@@ -48,12 +48,12 @@ class TokenService:
         credential_config: CredentialConfig,
         env: Env,
         event_publisher: EventPublisher,
-        should_retry_token_fetch: bool = True,
+        should_retry: bool = True,
     ) -> None:
         self._credential_config = credential_config
         self._http_command = BaseHttpCommand(host_url=get_oauth_base_url(env))
         self.event_publisher = event_publisher
-        self.should_retry_token_fetch = should_retry_token_fetch
+        self.should_retry = should_retry
         self.event_publisher.send(
             build_init_client_event(event_name=EventType.TOKEN_SERVICE_INITIALIZED)
         )
@@ -83,7 +83,7 @@ class TokenService:
             )
         try:
             # Retries (with backoff) are only done when there is no cached token to fall
-            should_retry = self.cached_token_data is None and self.should_retry_token_fetch
+            should_retry = self.cached_token_data is None and self.should_retry
             token_data = self.fetch_token_from_phonepe(should_retry=should_retry).json()
             self.cached_token_data = OauthResponse.from_dict(token_data)
         except Exception as exception:

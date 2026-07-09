@@ -472,21 +472,21 @@ class TestTokenService(TestCase):
         assert len(responses.calls) == BaseHttpCommand.MAX_RETRIES
         assert mock_sleep.call_args_list == [call(1), call(2)]
 
-    def test_should_retry_token_fetch_defaults_to_true(self):
+    def test_should_retry_defaults_to_true(self):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
                                      event_publisher=EventPublisher())
-        assert token_service.should_retry_token_fetch is True
+        assert token_service.should_retry is True
 
     @responses.activate
     @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
-    def test_no_retry_when_should_retry_token_fetch_is_false(self, mock_sleep):
+    def test_no_retry_when_should_retry_is_false(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
                                      event_publisher=EventPublisher(),
-                                     should_retry_token_fetch=False)
+                                     should_retry=False)
         for _ in range(BaseHttpCommand.MAX_RETRIES):
             responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
 
@@ -497,12 +497,12 @@ class TestTokenService(TestCase):
         assert token_service.cached_token_data is None
 
     @responses.activate
-    def test_first_fetch_succeeds_when_should_retry_token_fetch_is_false(self):
+    def test_first_fetch_succeeds_when_should_retry_is_false(self):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
                                      event_publisher=EventPublisher(),
-                                     should_retry_token_fetch=False)
+                                     should_retry=False)
         token_response_data = """{
                                     "access_token": "access_token",
                                     "encrypted_access_token": "encrypted_access_token",

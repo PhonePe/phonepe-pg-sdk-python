@@ -79,45 +79,45 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
         self.assertTrue(
             instance is not instance2)
 
-    def test_should_retry_token_fetch_defaults_to_true_and_propagates_to_token_service(self):
+    def test_should_retry_defaults_to_true_and_propagates_to_token_service(self):
         instance = StandardCheckoutClient.get_instance(
             client_id="client_id_should_retry_default",
             client_secret="client_secret",
             client_version=1,
             env=Env.SANDBOX
         )
-        assert instance._token_service.should_retry_token_fetch is True
+        assert instance._token_service.should_retry is True
 
-    def test_should_retry_token_fetch_false_propagates_to_token_service(self):
+    def test_should_retry_false_propagates_to_token_service(self):
         instance = StandardCheckoutClient.get_instance(
             client_id="client_id_should_retry_disabled",
             client_secret="client_secret",
             client_version=1,
             env=Env.SANDBOX,
-            should_retry_token_fetch=False
+            should_retry=False
         )
-        assert instance._token_service.should_retry_token_fetch is False
+        assert instance._token_service.should_retry is False
 
-    def test_singleton_with_diff_should_retry_token_fetch(self):
+    def test_singleton_with_diff_should_retry(self):
         instance_with_retry = StandardCheckoutClient.get_instance(
             client_id="client_id_retry_singleton",
             client_secret="client_secret",
             client_version=1,
             env=Env.SANDBOX,
-            should_retry_token_fetch=True
+            should_retry=True
         )
         instance_without_retry = StandardCheckoutClient.get_instance(
             client_id="client_id_retry_singleton",
             client_secret="client_secret",
             client_version=1,
             env=Env.SANDBOX,
-            should_retry_token_fetch=False
+            should_retry=False
         )
-        # Different should_retry_token_fetch values must produce distinct cached instances
+        # Different should_retry values must produce distinct cached instances
         assert instance_with_retry is not instance_without_retry
-        # Requesting with the same should_retry_token_fetch value returns the same cached instance
+        # Requesting with the same should_retry value returns the same cached instance
         assert instance_with_retry is StandardCheckoutClient.get_instance(
-            "client_id_retry_singleton", "client_secret", 1, Env.SANDBOX, should_retry_token_fetch=True)
+            "client_id_retry_singleton", "client_secret", 1, Env.SANDBOX, should_retry=True)
 
     def test_custom_checkout_singleton_via_get_instance(self):
         custom_checkout_client = CustomCheckoutClient.get_instance(client_id="client_id",
