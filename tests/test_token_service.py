@@ -23,6 +23,7 @@ from phonepe.sdk.pg.common.configs.credential_config import CredentialConfig
 from phonepe.sdk.pg.common.events.models.enums.event_type import EventType
 from phonepe.sdk.pg.common.events.publisher.event_publisher import EventPublisher
 from phonepe.sdk.pg.common.exceptions import BadRequest, PhonePeException, ServerError, TooManyRequests, UnauthorizedAccess
+from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttpCommand
 from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
 from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.env import Env, get_oauth_base_url
@@ -251,10 +252,10 @@ class TestTokenService(TestCase):
 
     def test_max_retries_constant(self):
         # Guards against accidental changes to the configured retry budget
-        assert TokenService.MAX_RETRIES == 3
+        assert BaseHttpCommand.MAX_RETRIES == 3
 
     @responses.activate
-    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
     def test_retry_succeeds_after_transient_failures_when_no_cached_token(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
@@ -285,24 +286,24 @@ class TestTokenService(TestCase):
         assert mock_sleep.call_args_list == [call(1), call(2)]
 
     @responses.activate
-    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
     def test_retry_exhausted_raises_when_no_cached_token(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
                                      event_publisher=EventPublisher())
-        for _ in range(TokenService.MAX_RETRIES):
+        for _ in range(BaseHttpCommand.MAX_RETRIES):
             responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
 
         self.assertRaises(ServerError, token_service.get_auth_token)
 
-        assert len(responses.calls) == TokenService.MAX_RETRIES  # exactly MAX_RETRIES attempts, no more
+        assert len(responses.calls) == BaseHttpCommand.MAX_RETRIES  # exactly MAX_RETRIES attempts, no more
         assert token_service.cached_token_data is None
         # no sleep after the final (3rd) failed attempt since we're about to give up
         assert mock_sleep.call_args_list == [call(1), call(2)]
 
     @responses.activate
-    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
     def test_retry_exhausted_publishes_none_cached_token_event(self, mock_sleep):
         mock_event_publisher = MagicMock(spec=EventPublisher)
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
@@ -312,7 +313,7 @@ class TestTokenService(TestCase):
         # reset the mock so the TOKEN_SERVICE_INITIALIZED init event doesn't interfere with assertions below
         mock_event_publisher.send.reset_mock()
 
-        for _ in range(TokenService.MAX_RETRIES):
+        for _ in range(BaseHttpCommand.MAX_RETRIES):
             responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
 
         self.assertRaises(ServerError, token_service.get_auth_token)
@@ -356,6 +357,49 @@ class TestTokenService(TestCase):
         assert len(responses.calls) == 2  # 1 initial fetch + exactly 1 failed refresh attempt (no retries)
 
     @responses.activate
+    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
+    def test_force_refresh_token_retries_on_transient_failure_then_succeeds(self, mock_sleep):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        token_response_data = """{
+                                    "access_token": "access_token",
+                                    "encrypted_access_token": "encrypted_access_token",
+                                    "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
+                                    "expires_in": 5014,
+                                    "issued_at": 1709623116,
+                                    "expires_at": 1709630316,
+                                    "session_expires_at": 1709630316,
+                                    "token_type": "O-Bearer"
+                                }"""
+        # e.g. RemoteDisconnected/502 while force-refreshing after a 401 - should retry, unlike before
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=502)
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                      json=json.loads(token_response_data))
+
+        token_service.force_refresh_token()
+
+        assert token_service.cached_token_data is not None
+        assert len(responses.calls) == 2  # 1 failed attempt + 1 successful retry
+        assert mock_sleep.call_args_list == [call(1)]
+
+    @responses.activate
+    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
+    def test_force_refresh_token_retry_exhausted_raises(self, mock_sleep):
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher())
+        for _ in range(BaseHttpCommand.MAX_RETRIES):
+            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
+
+        self.assertRaises(ServerError, token_service.force_refresh_token)
+
+        assert len(responses.calls) == BaseHttpCommand.MAX_RETRIES
+        assert mock_sleep.call_args_list == [call(1), call(2)]
+
+    @responses.activate
     def test_no_retry_on_bad_request_when_no_cached_token(self):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
@@ -386,7 +430,7 @@ class TestTokenService(TestCase):
         assert token_service.cached_token_data is None
 
     @responses.activate
-    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
     def test_retries_on_too_many_requests_when_no_cached_token(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
@@ -414,45 +458,36 @@ class TestTokenService(TestCase):
         assert mock_sleep.call_args_list == [call(1)]  # 1s backoff before the retry
 
     @responses.activate
-    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
+    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
     def test_too_many_requests_exhausted_raises_when_no_cached_token(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
                                      event_publisher=EventPublisher())
-        for _ in range(TokenService.MAX_RETRIES):
+        for _ in range(BaseHttpCommand.MAX_RETRIES):
             responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=429)
 
         self.assertRaises(TooManyRequests, token_service.get_auth_token)
 
-        assert len(responses.calls) == TokenService.MAX_RETRIES
+        assert len(responses.calls) == BaseHttpCommand.MAX_RETRIES
         assert mock_sleep.call_args_list == [call(1), call(2)]
 
-    def test_retry_backoff_delay_is_exponential(self):
+    def test_should_retry_defaults_to_true(self):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
                                      event_publisher=EventPublisher())
-        assert token_service._get_retry_delay(1) == 1
-        assert token_service._get_retry_delay(2) == 2
-        assert token_service._get_retry_delay(3) == 4
-
-    def test_should_retry_token_fetch_defaults_to_true(self):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        assert token_service.should_retry_token_fetch is True
+        assert token_service.should_retry is True
 
     @responses.activate
-    @patch("phonepe.sdk.pg.common.token_handler.token_service.sleep")
-    def test_no_retry_when_should_retry_token_fetch_is_false(self, mock_sleep):
+    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
+    def test_no_retry_when_should_retry_is_false(self, mock_sleep):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
                                      event_publisher=EventPublisher(),
-                                     should_retry_token_fetch=False)
-        for _ in range(TokenService.MAX_RETRIES):
+                                     should_retry=False)
+        for _ in range(BaseHttpCommand.MAX_RETRIES):
             responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
 
         self.assertRaises(ServerError, token_service.get_auth_token)
@@ -462,12 +497,12 @@ class TestTokenService(TestCase):
         assert token_service.cached_token_data is None
 
     @responses.activate
-    def test_first_fetch_succeeds_when_should_retry_token_fetch_is_false(self):
+    def test_first_fetch_succeeds_when_should_retry_is_false(self):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
                                      event_publisher=EventPublisher(),
-                                     should_retry_token_fetch=False)
+                                     should_retry=False)
         token_response_data = """{
                                     "access_token": "access_token",
                                     "encrypted_access_token": "encrypted_access_token",

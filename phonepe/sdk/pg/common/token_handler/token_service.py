@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import logging
-from time import sleep, time
+from time import time
 
 from phonepe.sdk.pg.common.configs.credential_config import CredentialConfig
 from phonepe.sdk.pg.common.constants.headers import (
@@ -29,7 +29,6 @@ from phonepe.sdk.pg.common.events.event_builder import (
 )
 from phonepe.sdk.pg.common.events.models.enums.event_type import EventType
 from phonepe.sdk.pg.common.events.publisher.event_publisher import EventPublisher
-from phonepe.sdk.pg.common.exceptions import ClientError, TooManyRequests
 from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttpCommand
 from phonepe.sdk.pg.common.http_client_modules.http_method_type import HttpMethodType
 from phonepe.sdk.pg.common.token_handler.oauth_response import OauthResponse
@@ -49,12 +48,12 @@ class TokenService:
         credential_config: CredentialConfig,
         env: Env,
         event_publisher: EventPublisher,
-        should_retry_token_fetch: bool = True,
+        should_retry: bool = True,
     ) -> None:
         self._credential_config = credential_config
         self._http_command = BaseHttpCommand(host_url=get_oauth_base_url(env))
         self.event_publisher = event_publisher
-        self.should_retry_token_fetch = should_retry_token_fetch
+        self.should_retry = should_retry
         self.event_publisher.send(
             build_init_client_event(event_name=EventType.TOKEN_SERVICE_INITIALIZED)
         )
@@ -75,9 +74,6 @@ class TokenService:
         token_sdk_expiry_time = issued_at + int((expires_at - issued_at) // 2)
         return current_time < token_sdk_expiry_time
 
-    MAX_RETRIES = 3
-    BASE_RETRY_DELAY_SECONDS = 1  # exponential backoff: 1s, 2s, 4s, ... before each subsequent retry
-
     def get_auth_token(self):
         if self._is_cached_token_valid():
             return (
@@ -86,10 +82,9 @@ class TokenService:
                 + self.cached_token_data.access_token
             )
         try:
-            if self.cached_token_data is None and self.should_retry_token_fetch:
-                token_data = self._fetch_token_with_retries().json()
-            else:
-                token_data = self.fetch_token_from_phonepe().json()
+            # Retries (with backoff) are only done when there is no cached token to fall
+            should_retry = self.cached_token_data is None and self.should_retry
+            token_data = self.fetch_token_from_phonepe(should_retry=should_retry).json()
             self.cached_token_data = OauthResponse.from_dict(token_data)
         except Exception as exception:
             if self.cached_token_data is None:
@@ -136,10 +131,14 @@ class TokenService:
 
     def force_refresh_token(self):
         logging.info("Force refreshing token")
-        token_data = self.fetch_token_from_phonepe().json()
+        # Retry on transient errors (e.g. RemoteDisconnected, timeouts, 5xx, 429) so a flaky
+        # network blip while force-refreshing doesn't leave the cache stale for the next call too.
+        # The original exception that triggered this refresh (e.g. 401) is re-raised by the caller
+        # regardless of whether this refresh succeeds.
+        token_data = self.fetch_token_from_phonepe(should_retry=True).json()
         self.cached_token_data = OauthResponse.from_dict(token_data)
 
-    def fetch_token_from_phonepe(self):
+    def fetch_token_from_phonepe(self, should_retry: bool = False):
         start = time()
         try:
             response = self._http_command.request(
@@ -147,6 +146,7 @@ class TokenService:
                 url=OAUTH_ENDPOINT,
                 data=self._prepare_oauth_body(),
                 headers=self._prepare_oauth_headers(),
+                should_retry=should_retry,
             )
             logging.info(f"Token fetch succeeded in {time() - start:.3f}s | status={response.status_code}")
             return response
@@ -157,49 +157,6 @@ class TokenService:
                 f"cause={getattr(e, '__cause__', None)}"
             )
             raise
-
-    def _fetch_token_with_retries(self):
-        last_exception = None
-        for attempt in range(1, self.MAX_RETRIES + 1):
-            try:
-                return self.fetch_token_from_phonepe()
-            except ClientError as exception:
-                if not isinstance(exception, TooManyRequests):
-                    # Genuine client-side error (bad request, invalid credentials, forbidden, etc.)
-                    # Retrying with the same input will fail identically, so fail fast instead.
-                    logging.error(
-                        f"Token fetch failed with a non-retryable client error, not retrying | "
-                        f"exception_type={type(exception).__name__} | "
-                        f"exception={exception}"
-                    )
-                    raise
-                last_exception = exception
-                logging.warning(
-                    f"Token fetch attempt {attempt}/{self.MAX_RETRIES} failed with a rate-limit error | "
-                    f"exception_type={type(exception).__name__} | "
-                    f"exception={exception}"
-                )
-            except Exception as exception:
-                last_exception = exception
-                logging.warning(
-                    f"Token fetch attempt {attempt}/{self.MAX_RETRIES} failed | "
-                    f"exception_type={type(exception).__name__} | "
-                    f"exception={exception} | "
-                    f"cause={getattr(exception, '__cause__', None)}"
-                )
-
-            if attempt < self.MAX_RETRIES:
-                delay = self._get_retry_delay(attempt)
-                logging.info(
-                    f"Waiting {delay}s before token fetch retry attempt {attempt + 1}/{self.MAX_RETRIES}"
-                )
-                sleep(delay)
-
-        raise last_exception
-
-    def _get_retry_delay(self, attempt):
-        """Exponential backoff delay (in seconds) before the given retry attempt: 1s, 2s, 4s, ..."""
-        return self.BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
 
     def _prepare_oauth_headers(self):
         return {CONTENT_TYPE: X_WWW_FORM_URLENCODED, ACCEPT: APPLICATION_JSON}
