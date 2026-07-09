@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import logging
+from time import sleep
 
 from requests import Session
 
@@ -41,6 +42,9 @@ class BaseHttpCommand:
 
     TIMEOUT = 5
 
+    MAX_RETRIES = 3
+    BASE_RETRY_DELAY_SECONDS = 1  # exponential backoff: 1s, 2s, 4s, ... before each subsequent retry
+
     SESSION = Session()
 
     def __init__(self, host_url: str) -> None:
@@ -50,10 +54,21 @@ class BaseHttpCommand:
     def get_complete_url(host_url: str, url: str):
         return f"{host_url}{url}"
 
-    def request(self, url: str, method: HttpMethodType, headers={}, data={}, path_params={}):
-        """Makes API Request"""
+    def request(self, url: str, method: HttpMethodType, headers={}, data={}, path_params={}, should_retry: bool = True):
+        """Makes API Request.
+
+        On transient failures (connection errors, timeouts, 5xx, 429) the request is retried up to
+        MAX_RETRIES times with exponential backoff. Genuine client errors (4xx other than 429) are
+        never retried. Pass should_retry=False to disable this behaviour entirely and fail fast after
+        a single attempt.
+        """
         complete_url = BaseHttpCommand.get_complete_url(self._host_url, url)
         logging.debug(f"Calling {method}: {complete_url}")
+        if not should_retry:
+            return self._send(method, complete_url, headers, data, path_params)
+        return self._send_with_retries(method, complete_url, headers, data, path_params)
+
+    def _send(self, method: HttpMethodType, complete_url: str, headers, data, path_params):
         if method == HttpMethodType.GET:
             return BaseHttpCommand.handle_response(
                 BaseHttpCommand.SESSION.get(url=complete_url, headers=headers, params=path_params,
@@ -62,6 +77,48 @@ class BaseHttpCommand:
             return BaseHttpCommand.handle_response(
                 BaseHttpCommand.SESSION.post(url=complete_url, headers=headers, data=data, params=path_params,
                                              timeout=BaseHttpCommand.TIMEOUT))
+
+    def _send_with_retries(self, method: HttpMethodType, complete_url: str, headers, data, path_params):
+        last_exception = None
+        for attempt in range(1, BaseHttpCommand.MAX_RETRIES + 1):
+            try:
+                return self._send(method, complete_url, headers, data, path_params)
+            except ClientError as exception:
+                if not isinstance(exception, TooManyRequests):
+                    # Genuine client-side error (bad request, unauthorized, forbidden, etc.)
+                    # Retrying with the same input will fail identically, so fail fast instead.
+                    logging.error(
+                        f"{method} {complete_url} failed with a non-retryable client error, not retrying | "
+                        f"exception_type={type(exception).__name__} | exception={exception}"
+                    )
+                    raise
+                last_exception = exception
+                logging.warning(
+                    f"{method} {complete_url} attempt {attempt}/{BaseHttpCommand.MAX_RETRIES} failed with a "
+                    f"rate-limit error | exception_type={type(exception).__name__} | exception={exception}"
+                )
+            except Exception as exception:
+                last_exception = exception
+                logging.warning(
+                    f"{method} {complete_url} attempt {attempt}/{BaseHttpCommand.MAX_RETRIES} failed | "
+                    f"exception_type={type(exception).__name__} | exception={exception} | "
+                    f"cause={getattr(exception, '__cause__', None)}"
+                )
+
+            if attempt < BaseHttpCommand.MAX_RETRIES:
+                delay = BaseHttpCommand._get_retry_delay(attempt)
+                logging.info(
+                    f"Waiting {delay}s before retrying {method} {complete_url} "
+                    f"(attempt {attempt + 1}/{BaseHttpCommand.MAX_RETRIES})"
+                )
+                sleep(delay)
+
+        raise last_exception
+
+    @staticmethod
+    def _get_retry_delay(attempt):
+        """Exponential backoff delay (in seconds) before the given retry attempt: 1s, 2s, 4s, ..."""
+        return BaseHttpCommand.BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
 
     @staticmethod
     def handle_response(response):
