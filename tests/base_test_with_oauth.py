@@ -30,7 +30,12 @@ class BaseTestWithOauth(TestCase):
     custom_checkout_client = None
     subscription_client = None
 
+    @responses.activate
     def setUp(self) -> None:
+        # Client construction now eagerly fetches an OAuth token (see TokenService), so this
+        # setUp() needs its own active responses mock covering that fetch - the test method's
+        # own @responses.activate (if any) only wraps the method itself, not setUp(), which
+        # unittest/pytest always calls beforehand, outside that decorator's scope.
         token_response_data = """{
                                     "access_token": "access_token",
                                     "encrypted_access_token": "encrypted_access_token",

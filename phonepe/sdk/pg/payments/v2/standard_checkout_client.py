@@ -16,6 +16,7 @@ import json
 from typing import Dict
 
 from phonepe.sdk.pg.common.base_client import BaseClient
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 from phonepe.sdk.pg.common.events.event_builder import build_init_client_event, build_order_status_event, \
     build_refund_event, build_standard_checkout_pay_event, build_create_sdk_order_event, build_transaction_status_event, \
     build_refund_status_event, build_callback_serialization_failed_event
@@ -48,14 +49,13 @@ class StandardCheckoutClient(BaseClient):
     _cached_instances: Dict[str, BaseClient] = {}
 
     def __init__(self, client_id: str, client_version: int, client_secret: str, env: Env,
-                 should_publish_events: bool = True, should_retry: bool = True):
+                 should_publish_events: bool = True, http_client_config: HttpClientConfig = None):
         should_publish_events = should_publish_events and env == Env.PRODUCTION
-        super().__init__(client_id, client_secret, client_version, env, should_publish_events,
-                         should_retry)
+        super().__init__(client_id, client_secret, client_version, env, should_publish_events, http_client_config)
 
     @staticmethod
     def get_instance(client_id: str, client_secret: str, client_version: int, env: Env = Env.SANDBOX,
-                     should_publish_events: bool = True, should_retry: bool = True):
+                     should_publish_events: bool = True, http_client_config: HttpClientConfig = None):
         """
         Init StandardCheckoutClient class with merchant-credentials
 
@@ -72,17 +72,15 @@ class StandardCheckoutClient(BaseClient):
             The default value is `Env.SANDBOX`
         should_publish_events: bool
             When true events are sent to PhonePe providing smoother experience
-        should_retry: bool
-            When true (default), the SDK retries transient failures (connection errors, timeouts,
-            server errors, rate-limiting) with exponential backoff. This applies both to the initial
-            OAuth token fetch (when there is no cached token yet) and to all business API calls
-            (setup, notify, cancel, order status, refund, etc.).
-            Set to false to disable this retry behaviour and fail immediately instead, e.g. if the
-            merchant already has their own retry/backoff strategy in place.
+        http_client_config: HttpClientConfig
+            Tunable HTTP connection-pool/timeout settings (pool size, keep-alive, connect
+            timeout, read timeout). Defaults to HttpClientConfig() SDK defaults if not provided.
+            See HttpClientConfig's docstring and the README's connection pool tuning section for
+            guidance on adjusting these per merchant traffic profile.
         """
         should_publish_events = should_publish_events and env == Env.PRODUCTION
         requested_client_sha = calculate_hash(str(client_id), str(client_version), str(client_secret), str(env),
-                                              str(should_publish_events), str(should_retry),
+                                              str(should_publish_events), str(http_client_config),
                                               str(FlowType.PG_CHECKOUT))
         if requested_client_sha in StandardCheckoutClient._cached_instances.keys():
             return StandardCheckoutClient._cached_instances[requested_client_sha]
@@ -92,7 +90,7 @@ class StandardCheckoutClient(BaseClient):
                                               client_secret=client_secret,
                                               env=env,
                                               should_publish_events=should_publish_events,
-                                              should_retry=should_retry)
+                                              http_client_config=http_client_config)
         StandardCheckoutClient._cached_instances[requested_client_sha] = new_instance
         init_event = build_init_client_event(flow_type=FlowType.PG_CHECKOUT,
                                              event_name=EventType.STANDARD_CHECKOUT_CLIENT_INITIALIZED)

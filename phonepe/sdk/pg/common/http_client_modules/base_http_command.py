@@ -13,16 +13,17 @@
 # limitations under the License.
 
 import logging
-from time import sleep
 
 from requests import Session
 
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 from phonepe.sdk.pg.common.exceptions import (BadRequest, ResourceGone, UnauthorizedAccess, ForbiddenAccess,
                                               ResourceConflict, ResourceInvalid,
                                               ResourceNotFound, ExpectationFailed, TooManyRequests)
 from phonepe.sdk.pg.common.exceptions import (ClientError, ServerError,
                                               PhonePeException)
 from phonepe.sdk.pg.common.http_client_modules.http_method_type import HttpMethodType
+from phonepe.sdk.pg.common.http_client_modules.recycling_http_adapter import RecyclingHTTPAdapter
 
 
 class BaseHttpCommand:
@@ -40,85 +41,54 @@ class BaseHttpCommand:
         429: TooManyRequests
     }
 
-    TIMEOUT = 5
-
-    MAX_RETRIES = 3
-    BASE_RETRY_DELAY_SECONDS = 1  # exponential backoff: 1s, 2s, 4s, ... before each subsequent retry
-
-    SESSION = Session()
-
-    def __init__(self, host_url: str) -> None:
+    def __init__(self, host_url: str, http_client_config: HttpClientConfig = None) -> None:
         self._host_url = host_url
+        self._http_client_config = http_client_config or HttpClientConfig()
+        # Each BaseHttpCommand gets its own dedicated Session/connection pool, sized and tuned
+        # per its HttpClientConfig - NOT a single shared session across every host/merchant in
+        # the process. This is what makes pool_size/keep_alive/timeouts genuinely configurable
+        # per client instance (e.g. a low-throughput merchant can use a small pool while a
+        # high-throughput one uses a large one, without affecting each other).
+        self._session = Session()
+        adapter = RecyclingHTTPAdapter(
+            pool_connections=self._http_client_config.pool_size,
+            pool_maxsize=self._http_client_config.pool_size,
+            keep_alive_seconds=self._http_client_config.keep_alive_seconds,
+        )
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
 
     @staticmethod
     def get_complete_url(host_url: str, url: str):
         return f"{host_url}{url}"
 
-    def request(self, url: str, method: HttpMethodType, headers={}, data={}, path_params={}, should_retry: bool = True):
-        """Makes API Request.
+    def request(self, url: str, method: HttpMethodType, headers={}, data={}, path_params={}):
+        """Makes a single-attempt API request (no retries).
 
-        On transient failures (connection errors, timeouts, 5xx, 429) the request is retried up to
-        MAX_RETRIES times with exponential backoff. Genuine client errors (4xx other than 429) are
-        never retried. Pass should_retry=False to disable this behaviour entirely and fail fast after
-        a single attempt.
+        The SDK does not retry requests: a retry is unsafe for non-idempotent calls (e.g. pay,
+        refund) since the original request may have already been processed server-side even if
+        the response was lost. Callers that want retry semantics should implement their own
+        retry/backoff strategy, scoped to the specific calls they know are safe to repeat.
         """
         complete_url = BaseHttpCommand.get_complete_url(self._host_url, url)
         logging.debug(f"Calling {method}: {complete_url}")
-        if not should_retry:
-            return self._send(method, complete_url, headers, data, path_params)
-        return self._send_with_retries(method, complete_url, headers, data, path_params)
+        return self._send(method, complete_url, headers, data, path_params)
 
     def _send(self, method: HttpMethodType, complete_url: str, headers, data, path_params):
+        timeout = (self._http_client_config.connect_timeout_seconds, self._http_client_config.read_timeout_seconds)
         if method == HttpMethodType.GET:
             return BaseHttpCommand.handle_response(
-                BaseHttpCommand.SESSION.get(url=complete_url, headers=headers, params=path_params,
-                                            timeout=BaseHttpCommand.TIMEOUT))
+                self._session.get(url=complete_url, headers=headers, params=path_params,
+                                  timeout=timeout))
         if method == HttpMethodType.POST:
             return BaseHttpCommand.handle_response(
-                BaseHttpCommand.SESSION.post(url=complete_url, headers=headers, data=data, params=path_params,
-                                             timeout=BaseHttpCommand.TIMEOUT))
+                self._session.post(url=complete_url, headers=headers, data=data, params=path_params,
+                                   timeout=timeout))
 
-    def _send_with_retries(self, method: HttpMethodType, complete_url: str, headers, data, path_params):
-        last_exception = None
-        for attempt in range(1, BaseHttpCommand.MAX_RETRIES + 1):
-            try:
-                return self._send(method, complete_url, headers, data, path_params)
-            except ClientError as exception:
-                if not isinstance(exception, TooManyRequests):
-                    # Genuine client-side error (bad request, unauthorized, forbidden, etc.)
-                    # Retrying with the same input will fail identically, so fail fast instead.
-                    logging.error(
-                        f"{method} {complete_url} failed with a non-retryable client error, not retrying | "
-                        f"exception_type={type(exception).__name__} | exception={exception}"
-                    )
-                    raise
-                last_exception = exception
-                logging.warning(
-                    f"{method} {complete_url} attempt {attempt}/{BaseHttpCommand.MAX_RETRIES} failed with a "
-                    f"rate-limit error | exception_type={type(exception).__name__} | exception={exception}"
-                )
-            except Exception as exception:
-                last_exception = exception
-                logging.warning(
-                    f"{method} {complete_url} attempt {attempt}/{BaseHttpCommand.MAX_RETRIES} failed | "
-                    f"exception_type={type(exception).__name__} | exception={exception} | "
-                    f"cause={getattr(exception, '__cause__', None)}"
-                )
-
-            if attempt < BaseHttpCommand.MAX_RETRIES:
-                delay = BaseHttpCommand._get_retry_delay(attempt)
-                logging.info(
-                    f"Waiting {delay}s before retrying {method} {complete_url} "
-                    f"(attempt {attempt + 1}/{BaseHttpCommand.MAX_RETRIES})"
-                )
-                sleep(delay)
-
-        raise last_exception
-
-    @staticmethod
-    def _get_retry_delay(attempt):
-        """Exponential backoff delay (in seconds) before the given retry attempt: 1s, 2s, 4s, ..."""
-        return BaseHttpCommand.BASE_RETRY_DELAY_SECONDS * (2 ** (attempt - 1))
+    def close(self):
+        """Releases all pooled connections held by this command's Session. Safe to call multiple
+        times."""
+        self._session.close()
 
     @staticmethod
     def handle_response(response):

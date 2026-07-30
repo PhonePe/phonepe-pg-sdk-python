@@ -14,13 +14,35 @@
 
 from unittest import TestCase
 
-from phonepe.sdk.pg.env import Env
+import responses
+
+from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
+from phonepe.sdk.pg.env import Env, get_oauth_base_url
 from phonepe.sdk.pg.subscription.v2.subscription_client import SubscriptionClient
+
+_TOKEN_RESPONSE = {
+    "access_token": "access_token",
+    "encrypted_access_token": "encrypted_access_token",
+    "refresh_token": "refresh_token",
+    "expires_in": 5014,
+    "issued_at": 2014804440,
+    "expires_at": 2014804440,
+    "session_expires_at": 2014804440,
+    "token_type": "O-Bearer",
+}
 
 
 class BaseSubscriptionClientForTest(TestCase):
-    subscription_client = SubscriptionClient.get_instance(client_id="client_id",
-                                                          client_version=1,
-                                                          client_secret="client_secret",
-                                                          env=Env.SANDBOX,
-                                                          should_publish_events=False)
+    # Client construction now eagerly fetches an OAuth token (see TokenService), so this needs
+    # its own active responses mock at the moment of construction. This runs once at module
+    # import time (same as before), scoped tightly to just this one construction call via an
+    # explicit RequestsMock context manager - a plain @responses.activate decorator cannot be
+    # applied to a bare class-body statement.
+    with responses.RequestsMock(assert_all_requests_are_fired=False) as _mock:
+        _mock.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                  json=_TOKEN_RESPONSE)
+        subscription_client = SubscriptionClient.get_instance(client_id="client_id",
+                                                              client_version=1,
+                                                              client_secret="client_secret",
+                                                              env=Env.SANDBOX,
+                                                              should_publish_events=False)

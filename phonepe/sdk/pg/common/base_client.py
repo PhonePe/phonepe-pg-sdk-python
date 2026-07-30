@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import phonepe
 from phonepe.sdk.pg.common.configs.credential_config import CredentialConfig
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 from phonepe.sdk.pg.common.constants.headers import (
     SOURCE,
     SOURCE_VERSION,
@@ -51,7 +52,7 @@ class BaseClient:
         client_version: int,
         env: Env,
         should_publish_events: bool = True,
-        should_retry: bool = True,
+        http_client_config: HttpClientConfig = None,
     ):
         self.env = env
         self.credential_config = CredentialConfig(
@@ -59,13 +60,17 @@ class BaseClient:
             client_secret=client_secret,
             client_version=client_version,
         )
+        # Same HttpClientConfig applies to every host this client instance talks to (main pg,
+        # PCI, event ingestion, oauth) - one merchant traffic profile, consistently tuned.
+        self.http_client_config = http_client_config or HttpClientConfig()
 
-        self._http_command = BaseHttpCommand(get_pg_base_url(self.env))
-        self._pci_http_command = BaseHttpCommand(get_pci_pg_base_url(self.env))
+        self._http_command = BaseHttpCommand(get_pg_base_url(self.env), http_client_config=self.http_client_config)
+        self._pci_http_command = BaseHttpCommand(get_pci_pg_base_url(self.env),
+                                                 http_client_config=self.http_client_config)
         self.should_publish_events = should_publish_events
-        self.should_retry = should_retry
         self._event_publisher_factory = EventPublisherFactory(
-            event_sender=BaseHttpCommand(host_url=get_event_ingestion_base_url(env))
+            event_sender=BaseHttpCommand(host_url=get_event_ingestion_base_url(env),
+                                         http_client_config=self.http_client_config)
         )
         self.event_publisher = self._event_publisher_factory.get_event_publisher(
             should_publish_events=should_publish_events
@@ -74,7 +79,7 @@ class BaseClient:
             credential_config=self.credential_config,
             env=self.env,
             event_publisher=self.event_publisher,
-            should_retry=should_retry,
+            http_client_config=self.http_client_config,
         )
         self.event_publisher.start_publishing_events(
             auth_token_supplier=self._token_service.get_auth_token
@@ -91,9 +96,9 @@ class BaseClient:
         http_command: "BaseHttpCommand" = None,
     ):
         # On UnauthorizedAccess the token cache is invalidated so the next call
-        # fetches a fresh token. This method does NOT retry the request itself.
-        # If a retry is added in future, use `command` (not `self._http_command`)
-        # so PCI-scoped calls are not silently downgraded to the standard host.
+        # fetches a fresh token. This method does NOT retry the request itself: retrying is
+        # unsafe for non-idempotent calls (e.g. pay, refund) since the original request may
+        # already have been processed server-side even if the response was lost.
         command = http_command if http_command is not None else self._http_command
         try:
             response_data = command.request(
@@ -102,7 +107,6 @@ class BaseClient:
                 headers=merge_dict(self._prepare_headers(), headers),
                 path_params=path_params,
                 data=data,
-                should_retry=self.should_retry,
             )
         except UnauthorizedAccess as exception:
             logging.info(f"Failed to authorize")
@@ -114,6 +118,16 @@ class BaseClient:
                 logging.info(f"Received a non-empty Response: {response_data_json}")
             return None
         return response_obj.from_dict(response_data.json())
+
+    def close(self):
+        """Releases resources held by this client instance: pooled HTTP connections and the
+        token service's background refresh thread (if running). Safe to call multiple times.
+        Useful for short-lived processes (tests, scripts, serverless invocations) that want to
+        shut down cleanly instead of relying on daemon threads/process exit."""
+        self._http_command.close()
+        self._pci_http_command.close()
+        self._event_publisher_factory.event_sender.close()
+        self._token_service.close()
 
     def _prepare_headers(self):
         return {

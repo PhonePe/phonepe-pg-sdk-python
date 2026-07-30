@@ -13,15 +13,12 @@
 # limitations under the License.
 
 import json
-from http.client import responses
 from time import time
 from unittest.mock import patch
 
 import responses
 
-from phonepe.sdk.pg.common.exceptions import PhonePeException
 from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
-from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.env import Env, get_pg_base_url, get_oauth_base_url
 from phonepe.sdk.pg.common.models.request.meta_info import MetaInfo
 from phonepe.sdk.pg.payments.v2.models.request.pg_v2_instrument_type import PgV2InstrumentType
@@ -45,6 +42,26 @@ from phonepe.sdk.pg.payments.v2.custom_checkout_client import CustomCheckoutClie
 from phonepe.sdk.pg.subscription.v2.subscription_client import SubscriptionClient
 from tests.base_subscription_client_for_test import BaseSubscriptionClientForTest
 
+# Far-future issued_at/expires_at (mirrors the pattern used by BaseTestWithOauth and the other
+# Base*ClientForTest fixtures) so any client constructed against this fixture never reaches its
+# proactive-refresh half-life during a real test run, and thus never leaks a background HTTP call
+# into a later, unrelated test's active responses mock.
+_LONG_LIVED_TOKEN_RESPONSE = {
+    "access_token": "access_token",
+    "encrypted_access_token": "encrypted_access_token",
+    "refresh_token": "refresh_token",
+    "expires_in": 5014,
+    "issued_at": 2014804440,
+    "expires_at": 2014804440,
+    "session_expires_at": 2014804440,
+    "token_type": "O-Bearer",
+}
+
+
+def _add_long_lived_oauth_mock():
+    responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                  json=_LONG_LIVED_TOKEN_RESPONSE)
+
 
 class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutClientForTest,
                           BaseSubscriptionClientForTest):
@@ -57,7 +74,12 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
                                                                        should_publish_events=False)
         assert standard_checkout_client == BaseStandardCheckoutClientForTest.standard_checkout_client
 
+    @responses.activate
     def test_singleton_with_diff_params(self):
+        # client_id_02/client_id_03 may already be cached (e.g. by tests/test_token_service.py's
+        # test_static, which uses the same ids) - this mock is a no-op then, harmless since
+        # @responses.activate defaults to assert_all_requests_are_fired=False.
+        _add_long_lived_oauth_mock()
         instance = StandardCheckoutClient.get_instance(
             client_id="client_id_02",
             client_secret="client_secret",
@@ -79,47 +101,13 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
         self.assertTrue(
             instance is not instance2)
 
-    def test_should_retry_defaults_to_true_and_propagates_to_token_service(self):
-        instance = StandardCheckoutClient.get_instance(
-            client_id="client_id_should_retry_default",
-            client_secret="client_secret",
-            client_version=1,
-            env=Env.SANDBOX
-        )
-        assert instance._token_service.should_retry is True
-
-    def test_should_retry_false_propagates_to_token_service(self):
-        instance = StandardCheckoutClient.get_instance(
-            client_id="client_id_should_retry_disabled",
-            client_secret="client_secret",
-            client_version=1,
-            env=Env.SANDBOX,
-            should_retry=False
-        )
-        assert instance._token_service.should_retry is False
-
-    def test_singleton_with_diff_should_retry(self):
-        instance_with_retry = StandardCheckoutClient.get_instance(
-            client_id="client_id_retry_singleton",
-            client_secret="client_secret",
-            client_version=1,
-            env=Env.SANDBOX,
-            should_retry=True
-        )
-        instance_without_retry = StandardCheckoutClient.get_instance(
-            client_id="client_id_retry_singleton",
-            client_secret="client_secret",
-            client_version=1,
-            env=Env.SANDBOX,
-            should_retry=False
-        )
-        # Different should_retry values must produce distinct cached instances
-        assert instance_with_retry is not instance_without_retry
-        # Requesting with the same should_retry value returns the same cached instance
-        assert instance_with_retry is StandardCheckoutClient.get_instance(
-            "client_id_retry_singleton", "client_secret", 1, Env.SANDBOX, should_retry=True)
-
+    @responses.activate
     def test_custom_checkout_singleton_via_get_instance(self):
+        # CustomCheckoutClient's own setUp() doesn't run for this multiply-inherited test class
+        # (MRO only calls the first parent's setUp(), i.e. BaseStandardCheckoutClientForTest's),
+        # so this singleton may not exist yet if this test runs in isolation - this mock covers
+        # that case; it's a harmless no-op if the singleton is already cached from elsewhere.
+        _add_long_lived_oauth_mock()
         custom_checkout_client = CustomCheckoutClient.get_instance(client_id="client_id",
                                                                    client_version=1,
                                                                    client_secret="client_secret",
@@ -127,7 +115,9 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
                                                                    should_publish_events=False)
         assert custom_checkout_client == BaseCustomCheckoutClientForTest.custom_checkout_client
 
+    @responses.activate
     def test_custom_checkout_singleton_with_diff_params(self):
+        _add_long_lived_oauth_mock()
         instance = CustomCheckoutClient.get_instance(
             client_id="client_id_02",
             client_secret="client_secret",
@@ -155,7 +145,9 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
                                                               should_publish_events=False)
         assert subscription_client == BaseSubscriptionClientForTest.subscription_client
 
+    @responses.activate
     def test_subscription_singleton_with_diff_params(self):
+        _add_long_lived_oauth_mock()
         instance = SubscriptionClient.get_instance(
             client_id="client_id_02",
             client_secret="client_secret",
@@ -174,7 +166,6 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
         )
         self.assertTrue(
             new_instance is not SubscriptionClient.get_instance("client_id_02", "client_secret", 1, Env.SANDBOX))
-
 
     def set_first_token_mock(self, cur_time):
         two_sec_more_cur = int(cur_time + 4)
@@ -235,27 +226,36 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
                         ]
                       }
                 """
+        # Each construction below now eagerly fetches its own token immediately (5 eager
+        # fetches), on top of whatever additional refetches happen later from the patched-clock
+        # get_order_status() calls - set_first_token_mock's single registered mock is reused
+        # (responses persists a registered mock for every matching request) for all of them.
         self.set_first_token_mock(cur_time)
         standard_checkout_client0 = StandardCheckoutClient(client_id="client_id",
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client0.close)
         standard_checkout_client1 = StandardCheckoutClient(client_id="client_id",
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client1.close)
         standard_checkout_client2 = StandardCheckoutClient(client_id="client_id",
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client2.close)
         standard_checkout_client3 = StandardCheckoutClient(client_id="client_id",
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client3.close)
         standard_checkout_client4 = StandardCheckoutClient(client_id="client_id",
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client4.close)
 
         responses.add(responses.GET, check_status_url, status=200, body="", json=json.loads(response_string))
         with patch.object(standard_checkout_client0._token_service, 'get_current_time',
@@ -301,7 +301,10 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
                                                                                                            upi_transaction_id='<upiTransactionId>',
                                                                                                            vpa='<vpa>'),
                                                                                        split_instruments=None)])
-        assert len(responses.calls) == 12  # (6 order status + 1 olympus get token)
+        # 5 eager fetches (1 per construction) + 6 lazy refetches (each get_order_status() call
+        # sees an immediately-expired token under the patched cur_time+10 clock, since the mocked
+        # token's half-life is always cur_time+2) + 6 order-status GETs = 17.
+        assert len(responses.calls) == 17
         assert response_object == expected_order_status_obj
 
     @responses.activate
@@ -351,22 +354,27 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client0.close)
         standard_checkout_client1 = StandardCheckoutClient(client_id="client_id",
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client1.close)
         standard_checkout_client2 = StandardCheckoutClient(client_id="client_id",
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client2.close)
         standard_checkout_client3 = StandardCheckoutClient(client_id="client_id",
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client3.close)
         standard_checkout_client4 = StandardCheckoutClient(client_id="client_id",
                                                            client_version=1,
                                                            client_secret="client_secret",
                                                            env=Env.SANDBOX)
+        self.addCleanup(standard_checkout_client4.close)
 
         responses.add(responses.GET, check_status_url, status=200, body="", json=json.loads(response_string))
         with patch.object(standard_checkout_client0._token_service, 'get_current_time',
@@ -412,5 +420,8 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
                                                                                                            upi_transaction_id='<upiTransactionId>',
                                                                                                            vpa='<vpa>'),
                                                                                        split_instruments=None)])
-        assert len(responses.calls) == 11  # (6 order status + 4 olympus get token for each instance)
+        # 5 eager fetches (1 per construction) suffice here: half-life (cur_time+2) is still in
+        # the future under the patched cur_time+1 clock, so none of the 6 get_order_status()
+        # calls need to refetch - only reuse each instance's own already-cached token.
+        assert len(responses.calls) == 11  # 5 oauth (eager) + 6 order status
         assert response_object == expected_order_status_obj
