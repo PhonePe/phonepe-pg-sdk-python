@@ -39,9 +39,13 @@ class HttpClientConfig:
         Maximum number of pooled (kept-alive) connections per host. Default 10.
     keep_alive_seconds: float
         Maximum time a pooled connection is allowed to sit idle before the SDK proactively
-        closes and replaces it with a fresh one on its next use, rather than risking handing a
-        request a connection the server/load-balancer may have already silently closed.
-        Default 60 seconds.
+        closes and replaces it with a fresh one, rather than risking handing a request a
+        connection the server/load-balancer may have already silently closed. Enforced two
+        ways: lazily, the moment an aged-out connection is next checked out for a request, and
+        proactively, via a background sweep thread (per client instance) that periodically
+        closes idle connections directly - roughly every keep_alive_seconds / 2 - so a
+        connection is never left waiting much longer than ~1.5x keep_alive_seconds before being
+        recycled, even during a long period with no request traffic at all. Default 60 seconds.
     connect_timeout_seconds: float
         Maximum time to wait while establishing the TCP/TLS connection. Default 3 seconds.
     read_timeout_seconds: float

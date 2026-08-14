@@ -135,9 +135,12 @@ If `http_client_config` is omitted, the SDK uses the defaults shown above (`pool
   gains nothing from a large pool - a small value (2-4) is enough, since most of those connections
   would otherwise sit idle.
 - **`keep_alive_seconds`** bounds how long a pooled connection can sit idle before the SDK
-  proactively closes and replaces it with a fresh one on its next use, rather than risking handing
-  a request a connection that a server/load balancer has already silently closed while idle (a
-  scenario confirmed via repro testing against PhonePe's production environment).
+  proactively closes and replaces it with a fresh one, rather than risking handing a request a
+  connection that a server/load balancer has already silently closed while idle (a scenario
+  confirmed via repro testing against PhonePe's production environment). This is enforced both
+  the moment a connection is next reused for a request *and* independently by a background
+  sweep thread that periodically closes idle connections directly, so staleness is bounded even
+  during a period with no request traffic at all.
 - **`connect_timeout_seconds`** / **`read_timeout_seconds`** bound how long a single request is
   allowed to take establishing a connection vs. waiting for a response. A merchant with fast,
   reliable infrastructure can tighten these to fail faster on genuine problems; a merchant on
