@@ -63,12 +63,9 @@ class BaseHttpCommand:
         return f"{host_url}{url}"
 
     def request(self, url: str, method: HttpMethodType, headers={}, data={}, path_params={}):
-        """Makes a single-attempt API request (no retries).
-
-        The SDK does not retry requests: a retry is unsafe for non-idempotent calls (e.g. pay,
-        refund) since the original request may have already been processed server-side even if
-        the response was lost. Callers that want retry semantics should implement their own
-        retry/backoff strategy, scoped to the specific calls they know are safe to repeat.
+        """Makes a single-attempt API request (no retries). Callers that want retry semantics
+        should implement their own retry/backoff strategy, scoped to the specific calls they
+        know are safe to repeat.
         """
         complete_url = BaseHttpCommand.get_complete_url(self._host_url, url)
         logging.debug(f"Calling {method}: {complete_url}")

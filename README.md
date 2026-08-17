@@ -4,11 +4,9 @@ A python library for integrating with PhonePe APIs.
 
 ## v3.0.0 - Breaking changes
 
-- **Retry mechanism removed.** The SDK no longer retries any HTTP call (including GET) - retrying
-  is unsafe for non-idempotent calls like pay/refund, since the original request may have already
-  been processed server-side even if the response was lost. The `should_retry` constructor
-  parameter has been removed from `StandardCheckoutClient`, `CustomCheckoutClient`, and
-  `SubscriptionClient` - passing it now raises a `TypeError`.
+- **Retry mechanism removed.** The SDK no longer retries any HTTP call (including GET). The
+  `should_retry` constructor parameter has been removed from `StandardCheckoutClient`,
+  `CustomCheckoutClient`, and `SubscriptionClient` - passing it now raises a `TypeError`.
 - **Client construction can now raise.** The SDK fetches its OAuth token immediately at
   construction (a single, non-blocking attempt) instead of waiting for the first API call.
   Genuine configuration problems (e.g. invalid credentials) now fail fast and

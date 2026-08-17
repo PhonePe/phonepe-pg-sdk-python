@@ -41,6 +41,10 @@ from phonepe.sdk.pg.common.token_handler.token_constants import (
 )
 from phonepe.sdk.pg.env import Env, get_oauth_base_url
 
+# Sentinel for "no previous token to compare against" (distinct from None, which is itself a
+# valid cached_token_data value).
+_NO_PREVIOUS_TOKEN = object()
+
 
 class TokenService:
     """Token management.
@@ -100,11 +104,17 @@ class TokenService:
         self._wake_event = threading.Event()
         self._background_thread = None
 
-        # Make exactly one synchronous attempt right now, with NO sleep-based retry on this
-        # (the constructing) thread. A genuine client-side error fails fast and propagates
-        # (client construction raises). Any transient failure is logged and left for the
-        # background thread - started immediately below - to keep retrying with backoff.
-        self._fetch_initial_token_or_defer_to_background()
+        # If the fetch below fails fast, this raises and BaseClient never gets a reference to
+        # close self._http_command's already-started sweep thread - close it here first.
+        try:
+            # Make exactly one synchronous attempt right now, with NO sleep-based retry on this
+            # (the constructing) thread. A genuine client-side error fails fast and propagates
+            # (client construction raises). Any transient failure is logged and left for the
+            # background thread - started immediately below - to keep retrying with backoff.
+            self._fetch_initial_token_or_defer_to_background()
+        except Exception:
+            self._http_command.close()
+            raise
 
         # Start the background thread now regardless of whether the fetch above succeeded: if it
         # already has a token, this proactively refreshes it at half-life; if it doesn't yet
@@ -133,7 +143,9 @@ class TokenService:
         if self._is_cached_token_valid():
             return self._format_token(self.cached_token_data)
         try:
-            self._fetch_and_store_token()
+            # Snapshot cached token before fetching, so a concurrent thread that already
+            # refreshed it can be detected (avoids a thundering herd of redundant fetches).
+            self._fetch_and_store_token(previous_token_data=self.cached_token_data)
         except Exception as exception:
             if self.cached_token_data is None:
                 self.event_publisher.send(
@@ -190,19 +202,33 @@ class TokenService:
 
     def force_refresh_token(self):
         logging.info("Force refreshing token")
-        self._fetch_and_store_token()
+        # Not based on _is_cached_token_valid(): a token can still look valid by half-life math
+        # yet be the exact one the server just rejected with a 401, so this must always attempt
+        # a fetch unless another caller already replaced it (thundering-herd guard).
+        self._fetch_and_store_token(previous_token_data=self.cached_token_data)
         # Nudge the background loop to recompute its next-refresh target off the token we just
         # fetched, instead of possibly sleeping on a schedule based on the now-replaced token.
         self._wake_event.set()
 
-    def _fetch_and_store_token(self):
+    def _fetch_and_store_token(self, previous_token_data=_NO_PREVIOUS_TOKEN):
         """Fetches a fresh token and atomically stores it. Guarded by _token_lock so the eager
         construction-time fetch, the proactive background refresh, the reactive
         force_refresh_token() (401 path), and get_auth_token()'s lazy fallback can never race and
-        corrupt/interleave cached_token_data."""
+        corrupt/interleave cached_token_data.
+
+        `previous_token_data`, when given, is the `cached_token_data` the caller observed before
+        deciding a fetch was needed. If another thread already replaced it by the time this
+        caller acquires the lock, the fetch is skipped (thundering-herd guard). Omit it for an
+        unconditional fetch (e.g. the very first fetch at construction).
+
+        Returns True if a network fetch happened, False if skipped.
+        """
         with self._token_lock:
+            if previous_token_data is not _NO_PREVIOUS_TOKEN and self.cached_token_data is not previous_token_data:
+                return False
             token_data = self.fetch_token_from_phonepe().json()
             self.cached_token_data = OauthResponse.from_dict(token_data)
+            return True
 
     def _fetch_initial_token_or_defer_to_background(self):
         try:
@@ -289,8 +315,15 @@ class TokenService:
                 return
             attempt += 1
             try:
-                self._fetch_and_store_token()
-                logging.info(f"Proactive background token refresh succeeded on attempt {attempt}")
+                fetched = self._fetch_and_store_token(previous_token_data=self.cached_token_data)
+                if fetched:
+                    logging.info(f"Proactive background token refresh succeeded on attempt {attempt}")
+                else:
+                    # A concurrent force_refresh_token() already replaced the token first.
+                    logging.info(
+                        "Proactive background token refresh skipped on attempt "
+                        f"{attempt}: token was already refreshed by another path"
+                    )
                 return
             except Exception as exception:
                 cached = self.cached_token_data

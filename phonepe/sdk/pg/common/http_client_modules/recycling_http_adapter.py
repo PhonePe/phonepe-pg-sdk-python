@@ -16,6 +16,7 @@ import logging
 import queue
 import threading
 import time
+import weakref
 from functools import partial
 
 from requests.adapters import DEFAULT_POOLBLOCK, HTTPAdapter
@@ -28,9 +29,9 @@ class _RecyclingPoolMixin:
 
     Background: repro testing (see repro_stale_connection.py) showed that PhonePe's
     server/load-balancer silently closes idle connections after a few hundred seconds. Since
-    the SDK no longer retries requests (retrying is unsafe for non-idempotent calls like pay/
-    refund), a connection that goes stale while sitting in the pool must never be handed to a
-    request in the first place - there would be no second attempt to fall back on.
+    the SDK does not retry requests, a connection that goes stale while sitting in the pool must
+    never be handed to a request in the first place - there would be no second attempt to fall
+    back on.
 
     Two independent mechanisms enforce this:
 
@@ -50,15 +51,20 @@ class _RecyclingPoolMixin:
     establishes a fresh socket on the very next use - reusing urllib3's existing reconnect path
     instead of duplicating it.
 
-    Tracking state (`_conn_opened_at`) is a plain instance attribute, scoped to this one pool
-    instance - never global/class-level - so it cannot affect any other connection pool
-    elsewhere in the same process.
+    Tracking state (`_conn_opened_at`) is a `weakref.WeakKeyDictionary` instance attribute,
+    scoped to this one pool instance. It is deliberately NOT a plain dict keyed by id(conn):
+    urllib3 can discard a connection through paths this mixin doesn't control (e.g. `queue.Full`,
+    or a broken connection thrown away after a failed request) without going through our eviction
+    code, so a plain dict would leak that entry forever - and since CPython can reuse a garbage
+    collected object's memory address, a later connection could coincidentally get the same id()
+    and be misattributed the old entry's stale timestamp. WeakKeyDictionary drops an entry
+    automatically once its connection is garbage collected, regardless of how it was discarded.
     """
 
     def __init__(self, *args, keep_alive_seconds=60, **kwargs):
         super().__init__(*args, **kwargs)
         self._keep_alive_seconds = keep_alive_seconds
-        self._conn_opened_at = {}  # id(conn) -> time.time() this connection was (re)established
+        self._conn_opened_at = weakref.WeakKeyDictionary()  # conn -> time.time() (re)established
 
     def _get_conn(self, timeout=None):
         conn = super()._get_conn(timeout=timeout)
@@ -69,15 +75,15 @@ class _RecyclingPoolMixin:
             # synchronously right after this, within the same request call chain, so recording
             # the checkout time here is accurate enough (within milliseconds) without needing
             # to patch HTTPConnection.connect() itself.
-            self._conn_opened_at[id(conn)] = now
+            self._conn_opened_at[conn] = now
             return conn
 
-        opened_at = self._conn_opened_at.get(id(conn))
+        opened_at = self._conn_opened_at.get(conn)
         if opened_at is not None and (now - opened_at) > self._keep_alive_seconds:
             conn.close()
             # About to be transparently reconnected on next use; reset the tracked age so it
             # isn't immediately considered stale again.
-            self._conn_opened_at[id(conn)] = now
+            self._conn_opened_at[conn] = now
         return conn
 
     def _evict_idle_connections(self, keep_alive_seconds):
@@ -122,10 +128,10 @@ class _RecyclingPoolMixin:
                 if item is None:
                     pool.put(None, block=False)
                     continue
-                opened_at = self._conn_opened_at.get(id(item))
+                opened_at = self._conn_opened_at.get(item)
                 if opened_at is not None and (now - opened_at) > keep_alive_seconds:
                     item.close()
-                    self._conn_opened_at.pop(id(item), None)
+                    self._conn_opened_at.pop(item, None)
                     pool.put(None, block=False)
                     evicted_count += 1
                 else:
@@ -137,7 +143,7 @@ class _RecyclingPoolMixin:
                 logging.exception(
                     "Error while proactively evicting a pooled connection; freeing its slot anyway"
                 )
-                self._conn_opened_at.pop(id(item), None)
+                self._conn_opened_at.pop(item, None)
                 try:
                     pool.put(None, block=False)
                 except Exception:

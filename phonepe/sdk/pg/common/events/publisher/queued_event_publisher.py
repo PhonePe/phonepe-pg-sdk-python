@@ -88,3 +88,10 @@ class QueuedEventPublisher(EventPublisher):
             self._scheduler.start()
             logging.debug(f"Starting scheduler to send events")
             self._scheduler.add_job(self.send_events, "interval", seconds=SEND_EVENTS_INTERVAL)
+
+    def close(self):
+        """Stops the background scheduler thread that periodically flushes queued events to
+        PhonePe. Safe to call multiple times, and safe to call even if
+        start_publishing_events() was never called (scheduler simply never started)."""
+        if self._scheduler.state != STATE_STOPPED:
+            self._scheduler.shutdown(wait=False)

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
 import time as time_module
 from time import time
 from unittest import TestCase
@@ -240,6 +241,91 @@ class TestTokenService(TestCase):
         token_service.force_refresh_token()
         assert len(responses.calls) == 2
         assert token_service.cached_token_data.access_token == "refreshed_token"
+
+    @responses.activate
+    def test_get_auth_token_does_not_thundering_herd_on_concurrent_expiry(self):
+        # Regression test: many threads seeing the same expired token at once must collapse to
+        # exactly ONE network refetch. A slow callback holds the first fetch in flight long
+        # enough for every other thread to queue up on _token_lock first.
+        cur = int(time())
+        _add_oauth_mock(json_body=_token_json(0, 1))  # already expired the instant it's cached
+
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+        self.addCleanup(token_service.close)
+        assert len(responses.calls) == 1  # eager fetch at construction (already expired)
+
+        # Stop the background refresh thread so it can't also refetch and skew the call count.
+        token_service._stop_event.set()
+        token_service._wake_event.set()
+        token_service._background_thread.join(timeout=2)
+
+        def slow_refetch_callback(request):
+            time_module.sleep(0.3)
+            return 200, {}, __import__("json").dumps(_token_json(cur, cur + 5014, access_token="herd_winner"))
+
+        responses.add_callback(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT,
+                               callback=slow_refetch_callback, content_type="application/json")
+
+        thread_count = 20
+        barrier = threading.Barrier(thread_count)
+        results = [None] * thread_count
+
+        def worker(index):
+            barrier.wait()
+            results[index] = token_service.get_auth_token()
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert len(responses.calls) == 2, (
+            f"expected exactly 1 refetch shared across {thread_count} concurrent callers, "
+            f"but saw {len(responses.calls) - 1} refetch(es)"
+        )
+        assert all(result == "O-Bearer" + " " + "herd_winner" for result in results)
+
+    @responses.activate
+    def test_force_refresh_token_does_not_thundering_herd_on_concurrent_401s(self):
+        # Same guard, but via force_refresh_token() (401 path) instead of the lazy-expiry path.
+        cur = int(time())
+        _add_oauth_mock(json_body=_token_json(cur, cur + 5014))  # NOT expired by half-life math
+
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+        self.addCleanup(token_service.close)
+        assert len(responses.calls) == 1
+        assert token_service._is_cached_token_valid()  # still "valid" by half-life, despite the 401 below
+
+        def slow_refetch_callback(request):
+            time_module.sleep(0.3)
+            return 200, {}, __import__("json").dumps(_token_json(cur, cur + 5014, access_token="post_401_token"))
+
+        responses.add_callback(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT,
+                               callback=slow_refetch_callback, content_type="application/json")
+
+        thread_count = 20
+        barrier = threading.Barrier(thread_count)
+
+        def worker():
+            barrier.wait()
+            token_service.force_refresh_token()
+
+        threads = [threading.Thread(target=worker) for _ in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert len(responses.calls) == 2, (
+            f"expected exactly 1 refetch shared across {thread_count} concurrent force_refresh_token() "
+            f"callers, but saw {len(responses.calls) - 1} refetch(es)"
+        )
+        assert token_service.cached_token_data.access_token == "post_401_token"
 
     @responses.activate
     def test_close_stops_background_thread(self):

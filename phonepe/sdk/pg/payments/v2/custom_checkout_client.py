@@ -118,13 +118,16 @@ class CustomCheckoutClient(BaseClient):
             guidance on adjusting these per merchant traffic profile.
         """
         should_publish_events = should_publish_events and env == Env.PRODUCTION
+        # Normalize before hashing so http_client_config=None and an equivalent explicit
+        # HttpClientConfig() map to the same cache key instead of duplicating the client.
+        effective_http_client_config = http_client_config or HttpClientConfig()
         requested_client_sha = calculate_hash(
             str(client_id),
             str(client_version),
             str(client_secret),
             str(env),
             str(should_publish_events),
-            str(http_client_config),
+            str(effective_http_client_config),
             str(FlowType.PG),
         )
         if requested_client_sha in CustomCheckoutClient._cached_instances.keys():
@@ -136,7 +139,7 @@ class CustomCheckoutClient(BaseClient):
             client_secret=client_secret,
             env=env,
             should_publish_events=should_publish_events,
-            http_client_config=http_client_config,
+            http_client_config=effective_http_client_config,
         )
         CustomCheckoutClient._cached_instances[requested_client_sha] = new_instance
         init_event = build_init_client_event(

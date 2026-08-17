@@ -84,23 +84,44 @@ class TestRecyclingHTTPAdapter(TestCase):
         assert opened_at_1 == opened_at_2, "same connection object/timestamp should be reused"
 
     def test_lazy_recycle_on_checkout_after_keep_alive_expires(self):
+        from unittest.mock import patch as mock_patch
+
+        from phonepe.sdk.pg.common.http_client_modules.recycling_http_adapter import (
+            _RecyclingPoolMixin,
+        )
+
         adapter = self._mount_adapter(keep_alive_seconds=1)
-        # Isolate the lazy (checkout-time) recycling mechanism from the background sweep, which
-        # would otherwise race to evict the same idle connection independently during the sleep
-        # below - this test is specifically about the _get_conn-time check, covered separately
-        # (and in combination) by the other tests in this file.
+        # Isolate the lazy (checkout-time) recycling mechanism from the background sweep.
         adapter._sweep_stop_event.set()
 
-        r1 = self.session.get(self.url)
-        pool = adapter.poolmanager.connection_from_url(self.url)
-        opened_at_1 = dict(pool._conn_opened_at)
+        # Patch the mixin CLASS method (not a specific pool instance) so we reliably capture
+        # whichever pool/conn actually serves each request, and track (pool, conn) pairs in
+        # call order - urllib3 can internally retry _get_conn() once for a broken connection,
+        # so the LAST entry per request is the one that actually succeeded.
+        checked_out = []  # list of (pool, conn) in call order
+        orig_get_conn = _RecyclingPoolMixin._get_conn
 
-        time.sleep(1.5)  # exceed the 1s keep-alive
-        r2 = self.session.get(self.url)
-        opened_at_2 = dict(pool._conn_opened_at)
+        def _recording_get_conn(self_pool, timeout=None):
+            conn = orig_get_conn(self_pool, timeout=timeout)
+            checked_out.append((self_pool, conn))
+            return conn
+
+        with mock_patch.object(_RecyclingPoolMixin, "_get_conn", _recording_get_conn):
+            r1 = self.session.get(self.url)
+            assert checked_out, "no connection was checked out for the first request"
+            pool_1, conn_1 = checked_out[-1]
+            opened_at_1 = pool_1._conn_opened_at.get(conn_1)
+            assert opened_at_1 is not None, "the connection serving r1 should be tracked"
+
+            time.sleep(1.5)  # exceed the 1s keep-alive
+            r2 = self.session.get(self.url)
+            assert len(checked_out) >= 2, "no connection was checked out for the second request"
+            pool_2, conn_2 = checked_out[-1]
+            opened_at_2 = pool_2._conn_opened_at.get(conn_2)
 
         assert r1.status_code == r2.status_code == 200
-        assert list(opened_at_2.values())[0] > list(opened_at_1.values())[0], (
+        assert opened_at_2 is not None, "the connection serving r2 should still be tracked"
+        assert opened_at_2 > opened_at_1, (
             "connection should have been recycled (fresh timestamp) once checked out past keep-alive"
         )
 
@@ -174,7 +195,7 @@ class TestRecyclingHTTPAdapter(TestCase):
         now = time.time()
         conn_a, conn_b, conn_c = _NormalConn(), _RaisingCloseConn(), _NormalConn()
         for conn in (conn_a, conn_b, conn_c):
-            pool._conn_opened_at[id(conn)] = now - 100  # well past any reasonable keep-alive
+            pool._conn_opened_at[conn] = now - 100  # well past any reasonable keep-alive
             pool.pool.put(conn)
 
         pool._evict_idle_connections(keep_alive_seconds=60)
@@ -192,4 +213,33 @@ class TestRecyclingHTTPAdapter(TestCase):
         assert len(items) == 3, f"pool capacity was lost: expected 3 slots, got {len(items)}"
         assert conn_a.closed
         assert all(item is None for item in items), "all three should have been evicted to None"
+
+    def test_conn_opened_at_does_not_leak_or_misattribute_after_gc(self):
+        # Regression test: a connection discarded outside our eviction paths (e.g. queue.Full,
+        # or urllib3 discarding a broken connection) must not leak its tracking entry forever,
+        # nor risk a later connection reusing the same id() and inheriting a stale timestamp.
+        import gc
+
+        from phonepe.sdk.pg.common.http_client_modules.recycling_http_adapter import (
+            RecyclingHTTPConnectionPool,
+        )
+
+        pool = RecyclingHTTPConnectionPool("example.com", 443, maxsize=1)
+        self.addCleanup(pool.close)
+
+        class _Conn:
+            pass
+
+        conn = _Conn()
+        pool._conn_opened_at[conn] = time.time() - 10_000  # deliberately very stale
+        assert len(pool._conn_opened_at) == 1
+
+        del conn  # simulate a discard OUTSIDE our own eviction/lazy-recycle code paths
+        gc.collect()
+
+        assert len(pool._conn_opened_at) == 0, (
+            "stale entry must be dropped automatically once its connection is garbage "
+            "collected - a plain id()-keyed dict would leak this entry forever and risk "
+            "misattributing it to an unrelated future connection reusing the same id()"
+        )
 

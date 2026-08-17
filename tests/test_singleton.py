@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 import responses
 
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
 from phonepe.sdk.pg.env import Env, get_pg_base_url, get_oauth_base_url
 from phonepe.sdk.pg.common.models.request.meta_info import MetaInfo
@@ -100,6 +101,36 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
         assert instance2 is StandardCheckoutClient.get_instance("client_id_03", "client_secret3", 1, Env.SANDBOX)
         self.assertTrue(
             instance is not instance2)
+
+    @responses.activate
+    def test_singleton_treats_omitted_and_explicit_default_http_client_config_as_equivalent(self):
+        # http_client_config=None and an explicit HttpClientConfig() must hash to the same
+        # cache key (previously they didn't, silently creating a duplicate client).
+        _add_long_lived_oauth_mock()
+        instance_default = StandardCheckoutClient.get_instance(
+            client_id="client_id_http_config_none",
+            client_secret="client_secret",
+            client_version=1,
+            env=Env.SANDBOX,
+        )
+        instance_explicit_default = StandardCheckoutClient.get_instance(
+            client_id="client_id_http_config_none",
+            client_secret="client_secret",
+            client_version=1,
+            env=Env.SANDBOX,
+            http_client_config=HttpClientConfig(),
+        )
+        assert instance_default is instance_explicit_default
+
+        # A GENUINELY different config must still get its own separate cached instance.
+        instance_custom = StandardCheckoutClient.get_instance(
+            client_id="client_id_http_config_none",
+            client_secret="client_secret",
+            client_version=1,
+            env=Env.SANDBOX,
+            http_client_config=HttpClientConfig(pool_size=5),
+        )
+        assert instance_custom is not instance_default
 
     @responses.activate
     def test_custom_checkout_singleton_via_get_instance(self):

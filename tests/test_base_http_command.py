@@ -34,10 +34,8 @@ FULL_URL = BASE_URL + PATH
 
 class TestBaseHttpCommand(TestCase):
     """BaseHttpCommand makes exactly one attempt per call, for every HTTP verb and every outcome.
-    The SDK does not retry requests at all: retrying is unsafe for non-idempotent calls (e.g. pay,
-    refund) since the original request may already have been processed server-side even if the
-    response was lost. This applies uniformly - transient server errors, rate-limiting, and client
-    errors are all surfaced to the caller after a single attempt, with no built-in backoff."""
+    Transient server errors, rate-limiting, and client errors are all surfaced to the caller
+    after a single attempt, with no built-in retry/backoff."""
 
     def setUp(self):
         self.command = BaseHttpCommand(host_url=BASE_URL)

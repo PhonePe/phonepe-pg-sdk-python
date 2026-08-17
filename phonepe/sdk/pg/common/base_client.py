@@ -63,24 +63,50 @@ class BaseClient:
         # Same HttpClientConfig applies to every host this client instance talks to (main pg,
         # PCI, event ingestion, oauth) - one merchant traffic profile, consistently tuned.
         self.http_client_config = http_client_config or HttpClientConfig()
-
-        self._http_command = BaseHttpCommand(get_pg_base_url(self.env), http_client_config=self.http_client_config)
-        self._pci_http_command = BaseHttpCommand(get_pci_pg_base_url(self.env),
-                                                 http_client_config=self.http_client_config)
         self.should_publish_events = should_publish_events
-        self._event_publisher_factory = EventPublisherFactory(
-            event_sender=BaseHttpCommand(host_url=get_event_ingestion_base_url(env),
-                                         http_client_config=self.http_client_config)
-        )
-        self.event_publisher = self._event_publisher_factory.get_event_publisher(
-            should_publish_events=should_publish_events
-        )
-        self._token_service = TokenService(
-            credential_config=self.credential_config,
-            env=self.env,
-            event_publisher=self.event_publisher,
-            http_client_config=self.http_client_config,
-        )
+
+        # Track resources that need cleanup if a later step fails (e.g. TokenService's eager
+        # fetch raising on bad credentials) - otherwise components created earlier (each starts
+        # its own background thread) would leak since this partially-built instance is never
+        # returned to the caller and close() can never be called on it.
+        closables = []
+        try:
+            self._http_command = BaseHttpCommand(get_pg_base_url(self.env),
+                                                 http_client_config=self.http_client_config)
+            closables.append(self._http_command)
+
+            self._pci_http_command = BaseHttpCommand(get_pci_pg_base_url(self.env),
+                                                     http_client_config=self.http_client_config)
+            closables.append(self._pci_http_command)
+
+            self._event_publisher_factory = EventPublisherFactory(
+                event_sender=BaseHttpCommand(host_url=get_event_ingestion_base_url(env),
+                                             http_client_config=self.http_client_config)
+            )
+            closables.append(self._event_publisher_factory.event_sender)
+
+            self.event_publisher = self._event_publisher_factory.get_event_publisher(
+                should_publish_events=should_publish_events
+            )
+            closables.append(self.event_publisher)
+
+            self._token_service = TokenService(
+                credential_config=self.credential_config,
+                env=self.env,
+                event_publisher=self.event_publisher,
+                http_client_config=self.http_client_config,
+            )
+            closables.append(self._token_service)
+        except Exception:
+            for closable in reversed(closables):
+                try:
+                    closable.close()
+                except Exception:
+                    logging.exception(
+                        "Error while releasing a resource during cleanup of a failed client construction"
+                    )
+            raise
+
         self.event_publisher.start_publishing_events(
             auth_token_supplier=self._token_service.get_auth_token
         )
@@ -95,10 +121,8 @@ class BaseClient:
         data: dict = None,
         http_command: "BaseHttpCommand" = None,
     ):
-        # On UnauthorizedAccess the token cache is invalidated so the next call
-        # fetches a fresh token. This method does NOT retry the request itself: retrying is
-        # unsafe for non-idempotent calls (e.g. pay, refund) since the original request may
-        # already have been processed server-side even if the response was lost.
+        # On UnauthorizedAccess the token cache is invalidated so the next call fetches a fresh
+        # token. This method does NOT retry the request itself.
         command = http_command if http_command is not None else self._http_command
         try:
             response_data = command.request(
@@ -120,13 +144,13 @@ class BaseClient:
         return response_obj.from_dict(response_data.json())
 
     def close(self):
-        """Releases resources held by this client instance: pooled HTTP connections and the
-        token service's background refresh thread (if running). Safe to call multiple times.
-        Useful for short-lived processes (tests, scripts, serverless invocations) that want to
-        shut down cleanly instead of relying on daemon threads/process exit."""
+        """Releases resources held by this client instance: pooled HTTP connections, the event
+        publisher's background scheduler, and the token service's background refresh thread.
+        Safe to call multiple times."""
         self._http_command.close()
         self._pci_http_command.close()
         self._event_publisher_factory.event_sender.close()
+        self.event_publisher.close()
         self._token_service.close()
 
     def _prepare_headers(self):
