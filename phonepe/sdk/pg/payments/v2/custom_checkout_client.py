@@ -72,6 +72,7 @@ class CustomCheckoutClient(BaseClient):
 
     _cached_instances: Dict[str, BaseClient] = {}
     _instance_lock = threading.Lock()
+    _key_locks: Dict[str, threading.Lock] = {}  # per-cache_key locks; bookkeeping guarded by _instance_lock
     _PCI_INSTRUMENT_TYPES = {PgV2InstrumentType.CARD, PgV2InstrumentType.TOKEN}
 
     def __init__(

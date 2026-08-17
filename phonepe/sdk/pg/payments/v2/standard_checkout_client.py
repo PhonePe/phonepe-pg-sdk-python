@@ -49,6 +49,7 @@ class StandardCheckoutClient(BaseClient):
     """
     _cached_instances: Dict[str, BaseClient] = {}
     _instance_lock = threading.Lock()
+    _key_locks: Dict[str, threading.Lock] = {}  # per-cache_key locks; bookkeeping guarded by _instance_lock
 
     def __init__(self, client_id: str, client_version: int, client_secret: str, env: Env,
                  should_publish_events: bool = True, http_client_config: HttpClientConfig = None):

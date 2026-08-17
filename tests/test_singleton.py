@@ -14,6 +14,7 @@
 
 import json
 import threading
+import time as time_module
 from time import time
 from unittest.mock import patch
 
@@ -517,3 +518,51 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
             f"but got {len(unique_instances)} distinct instances"
         )
         self.addCleanup(results[0].close)
+
+    @responses.activate
+    def test_get_instance_does_not_block_on_unrelated_slow_construction(self):
+        # Regression test: get_instance() previously held a single CLASS-WIDE lock across the
+        # whole (potentially slow, network-bound) client construction/OAuth fetch. A slow build
+        # for one merchant's credentials must never block get_instance() for a DIFFERENT,
+        # unrelated merchant's cache_key - each cache_key must be synchronized independently.
+        def callback(request):
+            body = request.body if isinstance(request.body, str) else request.body.decode()
+            token = "slow_merchant_token" if "merchant_lock_test_slow" in body else "fast_merchant_token"
+            if "merchant_lock_test_slow" in body:
+                time_module.sleep(1.5)
+            return 200, {}, json.dumps({
+                "access_token": token, "encrypted_access_token": "e", "refresh_token": "r",
+                "expires_in": 5014, "issued_at": int(time()), "expires_at": int(time()) + 5014,
+                "session_expires_at": int(time()) + 5014, "token_type": "O-Bearer",
+            })
+
+        responses.add_callback(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT,
+                               callback=callback, content_type="application/json")
+
+        slow_result = {}
+
+        def build_slow_merchant():
+            slow_result["client"] = StandardCheckoutClient.get_instance(
+                client_id="merchant_lock_test_slow", client_secret="client_secret",
+                client_version=1, env=Env.SANDBOX, should_publish_events=False,
+            )
+
+        slow_thread = threading.Thread(target=build_slow_merchant)
+        slow_thread.start()
+        time_module.sleep(0.3)  # let the slow thread enter construction and start its OAuth call
+
+        start = time()
+        fast_client = StandardCheckoutClient.get_instance(
+            client_id="merchant_lock_test_fast", client_secret="client_secret",
+            client_version=1, env=Env.SANDBOX, should_publish_events=False,
+        )
+        elapsed = time() - start
+        self.addCleanup(fast_client.close)
+
+        slow_thread.join(timeout=5)
+        self.addCleanup(slow_result["client"].close)
+
+        assert elapsed < 1.0, (
+            f"get_instance() for an unrelated merchant took {elapsed:.2f}s - it should not have "
+            f"waited on the other merchant's slow in-flight construction"
+        )

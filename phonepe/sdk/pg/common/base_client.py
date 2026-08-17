@@ -113,22 +113,38 @@ class BaseClient:
             raise
 
     @classmethod
+    def _get_key_lock(cls, cache_key):
+        """Returns (creating if necessary) a lock scoped to this one cache_key, so building/
+        closing one merchant's client never blocks an unrelated merchant's get_instance()/
+        close() call on the same class. `cls._instance_lock` here only guards this tiny
+        dict-of-locks bookkeeping - it is held only briefly and NEVER across the actual
+        (potentially slow, network-bound) client construction/OAuth fetch or close() below."""
+        with cls._instance_lock:
+            key_lock = cls._key_locks.get(cache_key)
+            if key_lock is None:
+                key_lock = threading.Lock()
+                cls._key_locks[cache_key] = key_lock
+            return key_lock
+
+    @classmethod
     def _get_or_build_cached_instance(cls, cache_key, build_and_register):
         """Thread-safe get-or-create for a subclass's get_instance() singleton cache
-        (cls._cached_instances, keyed by cache_key, guarded by cls._instance_lock - both
-        defined per-subclass). Checks the cache without the lock first (the common hit path),
-        then re-checks under the lock before building - otherwise two concurrent first-callers
-        for the same key could each build and orphan a full duplicate client (threads, pools,
-        and a wasted OAuth fetch), with only one surviving in the cache.
+        (cls._cached_instances, keyed by cache_key). Checks the cache lock-free first (the
+        common hit path), then re-checks under a lock SCOPED TO THIS cache_key before building -
+        otherwise two concurrent first-callers for the same key could each build and orphan a
+        full duplicate client (threads, pools, and a wasted OAuth fetch), with only one
+        surviving in the cache. Using a per-key lock (rather than one shared class-wide lock)
+        means a slow/hanging build for one merchant's credentials never blocks get_instance()/
+        close() calls for any OTHER merchant's cache_key.
 
-        `build_and_register` is called (with the lock held) only on a genuine cache miss; it
-        must construct the new instance, store it in cls._cached_instances[cache_key], and
-        return it.
+        `build_and_register` is called (with the per-key lock held) only on a genuine cache
+        miss; it must construct the new instance, store it in cls._cached_instances[cache_key],
+        and return it.
         """
         cached = cls._cached_instances.get(cache_key)
         if cached is not None:
             return cached
-        with cls._instance_lock:
+        with cls._get_key_lock(cache_key):
             cached = cls._cached_instances.get(cache_key)
             if cached is not None:
                 return cached
@@ -182,15 +198,11 @@ class BaseClient:
     def _evict_from_instance_cache(self):
         cache_key = getattr(self, "_cache_key", None)
         cached_instances = getattr(type(self), "_cached_instances", None)
-        lock = getattr(type(self), "_instance_lock", None)
         if cache_key is None or cached_instances is None:
             return
-        if lock is not None:
-            with lock:
-                if cached_instances.get(cache_key) is self:
-                    del cached_instances[cache_key]
-        elif cached_instances.get(cache_key) is self:
-            del cached_instances[cache_key]
+        with type(self)._get_key_lock(cache_key):
+            if cached_instances.get(cache_key) is self:
+                del cached_instances[cache_key]
 
     def _prepare_headers(self):
         return {

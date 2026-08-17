@@ -81,6 +81,7 @@ class SubscriptionClient(BaseClient):
 
     _cached_instances: Dict[str, BaseClient] = {}
     _instance_lock = threading.Lock()
+    _key_locks: Dict[str, threading.Lock] = {}  # per-cache_key locks; bookkeeping guarded by _instance_lock
     headers = {SOURCE_VERSION: SUBSCRIPTION_API_VERSION}
 
     def __init__(
