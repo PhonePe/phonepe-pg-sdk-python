@@ -214,6 +214,39 @@ class TestRecyclingHTTPAdapter(TestCase):
         assert conn_a.closed
         assert all(item is None for item in items), "all three should have been evicted to None"
 
+    def test_sweep_survives_queue_full_on_a_none_placeholder(self):
+        # Regression test: re-queueing a None pool-slot placeholder can itself raise queue.Full
+        # (e.g. a concurrent request's own _put_conn() raced in first). The except handler must
+        # not then try to weakly reference None when dropping its tracking entry - that raised
+        # TypeError and aborted the whole sweep loop, permanently losing every remaining slot.
+        import queue
+        from unittest.mock import patch
+
+        from phonepe.sdk.pg.common.http_client_modules.recycling_http_adapter import (
+            RecyclingHTTPConnectionPool,
+        )
+
+        pool = RecyclingHTTPConnectionPool("example.com", 443, maxsize=3)
+        self.addCleanup(pool.close)
+        for _ in range(3):
+            pool.pool.get_nowait()
+        for _ in range(3):
+            pool.pool.put(None)
+
+        orig_put = pool.pool.put
+        call_count = [0]
+
+        def flaky_put(item, block=False):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise queue.Full()
+            return orig_put(item, block=block)
+
+        with patch.object(pool.pool, "put", side_effect=flaky_put):
+            pool._evict_idle_connections(keep_alive_seconds=60)  # must not raise TypeError
+
+        assert pool.pool.qsize() == 3, "pool capacity was lost after a queue.Full on a None item"
+
     def test_conn_opened_at_does_not_leak_or_misattribute_after_gc(self):
         # Regression test: a connection discarded outside our eviction paths (e.g. queue.Full,
         # or urllib3 discarding a broken connection) must not leak its tracking entry forever,

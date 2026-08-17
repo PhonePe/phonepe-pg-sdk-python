@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import threading
 from time import time
 from unittest.mock import patch
 
@@ -456,3 +457,63 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
         # calls need to refetch - only reuse each instance's own already-cached token.
         assert len(responses.calls) == 11  # 5 oauth (eager) + 6 order status
         assert response_object == expected_order_status_obj
+
+    @responses.activate
+    def test_close_evicts_client_from_instance_cache(self):
+        # Regression test: close() must remove this instance from get_instance()'s cache -
+        # otherwise a later get_instance() call with the same arguments would keep returning
+        # this now-closed (no connection recycling, no proactive token refresh) instance.
+        _add_long_lived_oauth_mock()
+        client = StandardCheckoutClient.get_instance(
+            client_id="client_id_close_evicts_cache",
+            client_secret="client_secret",
+            client_version=1,
+            env=Env.SANDBOX,
+        )
+        cache_key = client._cache_key
+        assert StandardCheckoutClient._cached_instances.get(cache_key) is client
+
+        client.close()
+        assert cache_key not in StandardCheckoutClient._cached_instances
+
+        _add_long_lived_oauth_mock()
+        new_client = StandardCheckoutClient.get_instance(
+            client_id="client_id_close_evicts_cache",
+            client_secret="client_secret",
+            client_version=1,
+            env=Env.SANDBOX,
+        )
+        assert new_client is not client
+        self.addCleanup(new_client.close)
+
+    @responses.activate
+    def test_get_instance_does_not_duplicate_client_under_concurrent_first_call(self):
+        # Regression test: many threads calling get_instance() concurrently for the SAME
+        # brand-new (not yet cached) client must collapse to exactly ONE constructed client -
+        # not one per thread (which would leak threads/pools/an OAuth fetch per loser).
+        _add_long_lived_oauth_mock()
+        thread_count = 20
+        barrier = threading.Barrier(thread_count)
+        results = [None] * thread_count
+
+        def worker(index):
+            barrier.wait()
+            results[index] = StandardCheckoutClient.get_instance(
+                client_id="client_id_concurrent_first_call",
+                client_secret="client_secret",
+                client_version=1,
+                env=Env.SANDBOX,
+            )
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        unique_instances = {id(r) for r in results}
+        assert len(unique_instances) == 1, (
+            f"expected exactly 1 client built across {thread_count} concurrent first-callers, "
+            f"but got {len(unique_instances)} distinct instances"
+        )
+        self.addCleanup(results[0].close)

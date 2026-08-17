@@ -84,3 +84,28 @@ class TestBaseClientConstructionCleanup(TestCase):
 
         leaked = _new_threads_still_alive_after(before)
         assert not leaked, f"threads leaked after close() on a successfully constructed client: {leaked}"
+
+    @responses.activate
+    def test_no_thread_leak_when_start_publishing_events_raises(self):
+        # Regression test: start_publishing_events() is the LAST step of __init__, called after
+        # every component (and its background thread) already exists. If it raises, those
+        # threads must still be cleaned up - not just the earlier construction steps.
+        from unittest.mock import patch as mock_patch
+
+        from phonepe.sdk.pg.common.events.publisher.queued_event_publisher import QueuedEventPublisher
+
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                      json={"access_token": "access_token", "encrypted_access_token": "enc",
+                            "refresh_token": "refresh_token", "expires_in": 5014,
+                            "issued_at": int(time.time()), "expires_at": int(time.time()) + 5014,
+                            "session_expires_at": int(time.time()) + 5014, "token_type": "O-Bearer"})
+        before = set(t.name for t in threading.enumerate())
+
+        with mock_patch.object(QueuedEventPublisher, "start_publishing_events",
+                               side_effect=RuntimeError("simulated scheduler start failure")):
+            self.assertRaises(RuntimeError, BaseClient,
+                              client_id="client_id", client_secret="client_secret", client_version=1,
+                              env=Env.SANDBOX, should_publish_events=True)
+
+        leaked = _new_threads_still_alive_after(before)
+        assert not leaked, f"threads leaked after start_publishing_events() raised: {leaked}"

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import threading
 
 from phonepe.sdk.pg.common.base_client import BaseClient
 from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
@@ -70,6 +71,7 @@ class CustomCheckoutClient(BaseClient):
     """
 
     _cached_instances: Dict[str, BaseClient] = {}
+    _instance_lock = threading.Lock()
     _PCI_INSTRUMENT_TYPES = {PgV2InstrumentType.CARD, PgV2InstrumentType.TOKEN}
 
     def __init__(
@@ -130,24 +132,26 @@ class CustomCheckoutClient(BaseClient):
             str(effective_http_client_config),
             str(FlowType.PG),
         )
-        if requested_client_sha in CustomCheckoutClient._cached_instances.keys():
-            return CustomCheckoutClient._cached_instances[requested_client_sha]
 
-        new_instance = CustomCheckoutClient(
-            client_id=client_id,
-            client_version=client_version,
-            client_secret=client_secret,
-            env=env,
-            should_publish_events=should_publish_events,
-            http_client_config=effective_http_client_config,
-        )
-        CustomCheckoutClient._cached_instances[requested_client_sha] = new_instance
-        init_event = build_init_client_event(
-            flow_type=FlowType.PG,
-            event_name=EventType.CUSTOM_CHECKOUT_CLIENT_INITIALIZED,
-        )
-        new_instance.event_publisher.send(init_event)
-        return CustomCheckoutClient._cached_instances[requested_client_sha]
+        def _build_and_register():
+            new_instance = CustomCheckoutClient(
+                client_id=client_id,
+                client_version=client_version,
+                client_secret=client_secret,
+                env=env,
+                should_publish_events=should_publish_events,
+                http_client_config=effective_http_client_config,
+            )
+            new_instance._cache_key = requested_client_sha
+            CustomCheckoutClient._cached_instances[requested_client_sha] = new_instance
+            init_event = build_init_client_event(
+                flow_type=FlowType.PG,
+                event_name=EventType.CUSTOM_CHECKOUT_CLIENT_INITIALIZED,
+            )
+            new_instance.event_publisher.send(init_event)
+            return new_instance
+
+        return CustomCheckoutClient._get_or_build_cached_instance(requested_client_sha, _build_and_register)
 
     def pay(self, pay_request: PgPaymentRequest) -> PgPaymentResponse:
         """

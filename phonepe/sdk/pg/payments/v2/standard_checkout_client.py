@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import threading
 from typing import Dict
 
 from phonepe.sdk.pg.common.base_client import BaseClient
@@ -47,6 +48,7 @@ class StandardCheckoutClient(BaseClient):
     The StandardCheckout client class provides methods for interacting with the PhonePe APIs.
     """
     _cached_instances: Dict[str, BaseClient] = {}
+    _instance_lock = threading.Lock()
 
     def __init__(self, client_id: str, client_version: int, client_secret: str, env: Env,
                  should_publish_events: bool = True, http_client_config: HttpClientConfig = None):
@@ -85,20 +87,22 @@ class StandardCheckoutClient(BaseClient):
         requested_client_sha = calculate_hash(str(client_id), str(client_version), str(client_secret), str(env),
                                               str(should_publish_events), str(effective_http_client_config),
                                               str(FlowType.PG_CHECKOUT))
-        if requested_client_sha in StandardCheckoutClient._cached_instances.keys():
-            return StandardCheckoutClient._cached_instances[requested_client_sha]
 
-        new_instance = StandardCheckoutClient(client_id=client_id,
-                                              client_version=client_version,
-                                              client_secret=client_secret,
-                                              env=env,
-                                              should_publish_events=should_publish_events,
-                                              http_client_config=effective_http_client_config)
-        StandardCheckoutClient._cached_instances[requested_client_sha] = new_instance
-        init_event = build_init_client_event(flow_type=FlowType.PG_CHECKOUT,
-                                             event_name=EventType.STANDARD_CHECKOUT_CLIENT_INITIALIZED)
-        new_instance.event_publisher.send(init_event)
-        return StandardCheckoutClient._cached_instances[requested_client_sha]
+        def _build_and_register():
+            new_instance = StandardCheckoutClient(client_id=client_id,
+                                                  client_version=client_version,
+                                                  client_secret=client_secret,
+                                                  env=env,
+                                                  should_publish_events=should_publish_events,
+                                                  http_client_config=effective_http_client_config)
+            new_instance._cache_key = requested_client_sha
+            StandardCheckoutClient._cached_instances[requested_client_sha] = new_instance
+            init_event = build_init_client_event(flow_type=FlowType.PG_CHECKOUT,
+                                                 event_name=EventType.STANDARD_CHECKOUT_CLIENT_INITIALIZED)
+            new_instance.event_publisher.send(init_event)
+            return new_instance
+
+        return StandardCheckoutClient._get_or_build_cached_instance(requested_client_sha, _build_and_register)
 
     def pay(self, pay_request: StandardCheckoutPayRequest) -> StandardCheckoutPayResponse:
         """

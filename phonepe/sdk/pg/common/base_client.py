@@ -14,6 +14,7 @@
 
 import json
 import logging
+import threading
 from dataclasses import dataclass
 
 import phonepe
@@ -97,6 +98,10 @@ class BaseClient:
                 http_client_config=self.http_client_config,
             )
             closables.append(self._token_service)
+
+            self.event_publisher.start_publishing_events(
+                auth_token_supplier=self._token_service.get_auth_token
+            )
         except Exception:
             for closable in reversed(closables):
                 try:
@@ -107,9 +112,27 @@ class BaseClient:
                     )
             raise
 
-        self.event_publisher.start_publishing_events(
-            auth_token_supplier=self._token_service.get_auth_token
-        )
+    @classmethod
+    def _get_or_build_cached_instance(cls, cache_key, build_and_register):
+        """Thread-safe get-or-create for a subclass's get_instance() singleton cache
+        (cls._cached_instances, keyed by cache_key, guarded by cls._instance_lock - both
+        defined per-subclass). Checks the cache without the lock first (the common hit path),
+        then re-checks under the lock before building - otherwise two concurrent first-callers
+        for the same key could each build and orphan a full duplicate client (threads, pools,
+        and a wasted OAuth fetch), with only one surviving in the cache.
+
+        `build_and_register` is called (with the lock held) only on a genuine cache miss; it
+        must construct the new instance, store it in cls._cached_instances[cache_key], and
+        return it.
+        """
+        cached = cls._cached_instances.get(cache_key)
+        if cached is not None:
+            return cached
+        with cls._instance_lock:
+            cached = cls._cached_instances.get(cache_key)
+            if cached is not None:
+                return cached
+            return build_and_register()
 
     def _request_with_token_invalidation(
         self,
@@ -146,12 +169,28 @@ class BaseClient:
     def close(self):
         """Releases resources held by this client instance: pooled HTTP connections, the event
         publisher's background scheduler, and the token service's background refresh thread.
-        Safe to call multiple times."""
+        Also evicts this instance from its class's get_instance() cache (if present), so a
+        later get_instance() call with the same arguments builds a fresh client instead of
+        returning this now-closed one. Safe to call multiple times."""
+        self._evict_from_instance_cache()
         self._http_command.close()
         self._pci_http_command.close()
         self._event_publisher_factory.event_sender.close()
         self.event_publisher.close()
         self._token_service.close()
+
+    def _evict_from_instance_cache(self):
+        cache_key = getattr(self, "_cache_key", None)
+        cached_instances = getattr(type(self), "_cached_instances", None)
+        lock = getattr(type(self), "_instance_lock", None)
+        if cache_key is None or cached_instances is None:
+            return
+        if lock is not None:
+            with lock:
+                if cached_instances.get(cache_key) is self:
+                    del cached_instances[cache_key]
+        elif cached_instances.get(cache_key) is self:
+            del cached_instances[cache_key]
 
     def _prepare_headers(self):
         return {

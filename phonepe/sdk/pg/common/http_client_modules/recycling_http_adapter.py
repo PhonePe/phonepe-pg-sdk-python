@@ -143,7 +143,15 @@ class _RecyclingPoolMixin:
                 logging.exception(
                     "Error while proactively evicting a pooled connection; freeing its slot anyway"
                 )
-                self._conn_opened_at.pop(item, None)
+                if item is not None:
+                    self._conn_opened_at.pop(item, None)
+                    # If the item hadn't been closed yet (e.g. it wasn't stale but couldn't be
+                    # re-queued), close it now - otherwise its socket would leak, unreferenced by
+                    # the pool going forward. Safe to call even if already closed.
+                    try:
+                        item.close()
+                    except Exception:
+                        pass
                 try:
                     pool.put(None, block=False)
                 except Exception:
