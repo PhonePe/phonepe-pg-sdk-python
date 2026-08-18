@@ -109,3 +109,59 @@ class TestBaseClientConstructionCleanup(TestCase):
 
         leaked = _new_threads_still_alive_after(before)
         assert not leaked, f"threads leaked after start_publishing_events() raised: {leaked}"
+
+
+class TestBaseClientClose(TestCase):
+    """Regression coverage for close()'s failure isolation and component ordering."""
+
+    def _oauth_mock(self):
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                      json={"access_token": "access_token", "encrypted_access_token": "enc",
+                            "refresh_token": "refresh_token", "expires_in": 5014,
+                            "issued_at": int(time.time()), "expires_at": int(time.time()) + 5014,
+                            "session_expires_at": int(time.time()) + 5014, "token_type": "O-Bearer"})
+
+    @responses.activate
+    def test_close_still_closes_remaining_components_when_one_close_raises(self):
+        # A raise in one component must not orphan the others (their background threads would
+        # keep running with no way to retry, since the instance is already evicted from cache).
+        self._oauth_mock()
+        client = BaseClient(client_id="client_id", client_secret="client_secret", client_version=1,
+                            env=Env.SANDBOX, should_publish_events=True)
+
+        def _boom():
+            raise RuntimeError("simulated failure closing the event publisher")
+
+        client.event_publisher.close = _boom
+        client.close()
+
+        # Every component after the failing one must still have been closed.
+        assert client._token_service._stop_event.is_set(), \
+            "token service was not closed after an earlier component's close() raised"
+        assert not client._token_service._background_thread.is_alive(), \
+            "token refresh thread still running after an earlier component's close() raised"
+
+    @responses.activate
+    def test_close_stops_event_publisher_before_closing_its_sender(self):
+        # An in-flight flush on an already-closed sender would silently re-create pooled
+        # connections on an adapter whose recycling sweep thread is already stopped.
+        self._oauth_mock()
+        client = BaseClient(client_id="client_id", client_secret="client_secret", client_version=1,
+                            env=Env.SANDBOX, should_publish_events=True)
+
+        order = []
+        publisher_close = client.event_publisher.close
+        sender_close = client._event_publisher_factory.event_sender.close
+
+        def _record(name, real):
+            def _wrapped():
+                order.append(name)
+                return real()
+
+            return _wrapped
+
+        client.event_publisher.close = _record("publisher", publisher_close)
+        client._event_publisher_factory.event_sender.close = _record("sender", sender_close)
+        client.close()
+
+        self.assertEqual(["publisher", "sender"], order)

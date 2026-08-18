@@ -97,8 +97,7 @@ For more details, please visit: https://developer.phonepe.com
 
 ## Connection pool & timeout tuning
 
-Every client (`StandardCheckoutClient`, `CustomCheckoutClient`, `SubscriptionClient`) accepts an
-optional `http_client_config` argument on both its constructor and `get_instance(...)`, letting
+Every client accepts an optional `http_client_config` argument on both its constructor and `get_instance(...)`, letting
 you tune the underlying HTTP connection pool and timeouts per merchant/client instance:
 
 ```python
@@ -146,27 +145,23 @@ If `http_client_config` is omitted, the SDK uses the defaults shown above (`pool
   may need to raise `read_timeout_seconds` to avoid timing out on otherwise-successful, just-slow
   responses.
 
-**Worked examples:**
-
-- **High-throughput merchant** (e.g. many concurrent payment/status requests per second, on solid
-  infrastructure): increase `pool_size` (e.g. 20-50) so concurrent requests aren't blocked waiting
-  for a free connection, and consider lowering `read_timeout_seconds` (e.g. 10-15s) since a slow
-  response is more likely a genuine problem worth failing fast on.
-- **Low-throughput / slower-infrastructure merchant** (e.g. one request every several seconds,
-  or calling from a network with higher latency): a small `pool_size` (2-4) is plenty - a large
-  pool would mostly sit idle - but raise `read_timeout_seconds` (e.g. 45-60s) to tolerate your
-  own slower network/processing before giving up on an otherwise-successful response.
-
 ### Releasing resources with `close()`
 
 Every client exposes a `close()` method that releases pooled HTTP connections and stops the
-background token-refresh thread (see below). This is a daemon thread, so it doesn't prevent your
-process from exiting even if you never call `close()` - but short-lived processes (tests, scripts,
-serverless invocations) that want a clean, immediate shutdown should call it explicitly:
+SDK's background threads (token refresh, connection recycling, event publishing).
+
+**Calling `close()` is optional.** All of these are daemon threads, so a long-lived server that
+creates its client once and never closes it works exactly as before and still exits cleanly.
+Call `close()` only when you want a deterministic, immediate release - short-lived processes
+(tests, scripts, serverless invocations), or when you want to discard a client instance:
 
 ```python
 standard_phonepe_client.close()
 ```
+
+`close()` also removes the instance from the `get_instance()` cache, so a later `get_instance()`
+call with the same arguments builds a fresh client instead of returning the closed one. It is
+safe to call multiple times, and it waits for any in-flight event flush to finish.
 
 ## License
 

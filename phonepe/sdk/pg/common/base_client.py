@@ -188,12 +188,21 @@ class BaseClient:
         Also evicts this instance from its class's get_instance() cache (if present), so a
         later get_instance() call with the same arguments builds a fresh client instead of
         returning this now-closed one. Safe to call multiple times."""
-        self._evict_from_instance_cache()
-        self._http_command.close()
-        self._pci_http_command.close()
-        self._event_publisher_factory.event_sender.close()
-        self.event_publisher.close()
-        self._token_service.close()
+        # The event publisher is stopped before the session it publishes through, otherwise an
+        # in-flight flush would re-create pooled connections on an already-closed sender.
+        # Each step is isolated so one failure can't leave the remaining components running.
+        for closer in (
+            self._evict_from_instance_cache,
+            self.event_publisher.close,
+            self._event_publisher_factory.event_sender.close,
+            self._http_command.close,
+            self._pci_http_command.close,
+            self._token_service.close,
+        ):
+            try:
+                closer()
+            except Exception:
+                logging.exception("Error while releasing a resource during client close()")
 
     def _evict_from_instance_cache(self):
         cache_key = getattr(self, "_cache_key", None)

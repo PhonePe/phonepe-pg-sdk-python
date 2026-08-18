@@ -92,6 +92,8 @@ class QueuedEventPublisher(EventPublisher):
     def close(self):
         """Stops the background scheduler thread that periodically flushes queued events to
         PhonePe. Safe to call multiple times, and safe to call even if
-        start_publishing_events() was never called (scheduler simply never started)."""
+        start_publishing_events() was never called (scheduler simply never started).
+        Waits for an in-flight flush to finish so it can't keep using the event sender after
+        the caller closes it."""
         if self._scheduler.state != STATE_STOPPED:
-            self._scheduler.shutdown(wait=False)
+            self._scheduler.shutdown(wait=True)
