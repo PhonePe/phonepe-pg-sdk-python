@@ -27,6 +27,7 @@ from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
 from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.env import Env, get_oauth_base_url
 from phonepe.sdk.pg.payments.v2.standard_checkout_client import StandardCheckoutClient
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 
 
 def _token_json(issued_at, expires_at, access_token="access_token"):
@@ -67,8 +68,9 @@ class TestTokenService(TestCase):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
+                                     event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
         assert len(responses.calls) == 1  # eager fetch at construction, not on first get_auth_token()
         # Compare against a value derived from the same fixture data (not a hardcoded literal),
         # since token-shaped strings get redacted in tool/terminal output and must never be
@@ -83,8 +85,9 @@ class TestTokenService(TestCase):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
+                                     event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
         assert len(responses.calls) == 1  # eager fetch at construction
 
         _add_oauth_mock(json_body=_token_json(0, 1709630316))
@@ -100,8 +103,9 @@ class TestTokenService(TestCase):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
+                                     event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
 
         token_service.get_auth_token()
         token_service.get_auth_token()
@@ -127,8 +131,9 @@ class TestTokenService(TestCase):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
+                                     event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
 
         token_service.get_auth_token()
         token_service.get_auth_token()
@@ -157,10 +162,15 @@ class TestTokenService(TestCase):
                             "message": "Bad Request: Invalid Client, trackingId: 2123d",
                             "context": {"error_description": "Client authentication failure"}})
 
-        self.assertRaises(PhonePeException, TokenService,
-                          credential_config=CredentialConfig(client_id="client_id", client_version=1,
-                                                             client_secret="client_secret"),
-                          env=Env.SANDBOX, event_publisher=EventPublisher())
+        token_service = TokenService(
+            credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                               client_secret="client_secret"),
+            env=Env.SANDBOX, event_publisher=EventPublisher(),
+            http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+
+        # The fetch happens in start(), so the owner can close() this instance when it raises.
+        self.assertRaises(PhonePeException, token_service.start)
         assert len(responses.calls) == 1  # fails fast, no retries for a genuine client error
 
     @responses.activate
@@ -168,10 +178,15 @@ class TestTokenService(TestCase):
         responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=401,
                       json={"success": False, "code": "401"})
 
-        self.assertRaises(UnauthorizedAccess, TokenService,
-                          credential_config=CredentialConfig(client_id="client_id", client_version=1,
-                                                             client_secret="client_secret"),
-                          env=Env.SANDBOX, event_publisher=EventPublisher())
+        token_service = TokenService(
+            credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                               client_secret="client_secret"),
+            env=Env.SANDBOX, event_publisher=EventPublisher(),
+            http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+
+        # The fetch happens in start(), so the owner can close() this instance when it raises.
+        self.assertRaises(UnauthorizedAccess, token_service.start)
         assert len(responses.calls) == 1  # fails fast, no retries for invalid credentials
 
     def test_construction_does_not_block_on_transient_failure(self):
@@ -191,8 +206,9 @@ class TestTokenService(TestCase):
         start = time()
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
                                                                         client_secret="client_secret"),
-                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
         elapsed = time() - start
 
         assert elapsed < 0.5, f"construction blocked for {elapsed:.3f}s on a transient failure"
@@ -216,8 +232,9 @@ class TestTokenService(TestCase):
 
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
                                                                         client_secret="client_secret"),
-                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
 
         assert token_service.cached_token_data is None  # rate-limited on the synchronous attempt
         assert len(responses.calls) == 1
@@ -233,8 +250,9 @@ class TestTokenService(TestCase):
         _add_oauth_mock()
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
                                                                         client_secret="client_secret"),
-                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
         assert len(responses.calls) == 1
 
         _add_oauth_mock(json_body=_token_json(int(time()), int(time()) + 5014, access_token="refreshed_token"))
@@ -252,8 +270,9 @@ class TestTokenService(TestCase):
 
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
                                                                         client_secret="client_secret"),
-                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
         assert len(responses.calls) == 1  # eager fetch at construction (already expired)
 
         # Stop the background refresh thread so it can't also refetch and skew the call count.
@@ -296,8 +315,9 @@ class TestTokenService(TestCase):
 
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
                                                                         client_secret="client_secret"),
-                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
         assert len(responses.calls) == 1
         assert token_service._is_cached_token_valid()  # still "valid" by half-life, despite the 401 below
 
@@ -332,8 +352,9 @@ class TestTokenService(TestCase):
         _add_oauth_mock()
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
                                                                         client_secret="client_secret"),
-                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
         assert token_service._background_thread.is_alive()
         token_service.close()
         assert not token_service._background_thread.is_alive()
@@ -345,8 +366,9 @@ class TestTokenService(TestCase):
         _add_oauth_mock(json_body=_token_json(cur, cur + 2, access_token="token_1"))
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
                                                                         client_secret="client_secret"),
-                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
         assert len(responses.calls) == 1
         assert token_service.cached_token_data.access_token == "token_1"
 
@@ -368,8 +390,9 @@ class TestTokenService(TestCase):
                       json=_token_json(cur, cur + 2))
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
                                                                         client_secret="client_secret"),
-                                     env=Env.SANDBOX, event_publisher=EventPublisher())
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
         assert len(responses.calls) == 1
 
         time_module.sleep(2.5)
@@ -403,10 +426,11 @@ class TestTokenService(TestCase):
                 env=Env.SANDBOX
             )
 
-        # instance/instance1/instance2 are cached singletons shared with other tests (e.g.
-        # test_singleton.py reuses the same client_id/client_secret) - deliberately NOT closed
-        # here, since doing so would tear down connections/background threads still needed by
-        # whichever test runs next and reuses the same cached instance.
+        # Closed (and thus evicted from the singleton cache) after the test: this test also
+        # corrupts cached_token_data below, which must not leak into a later test reusing the
+        # same cached instance.
+        self.addCleanup(instance.close)
+        self.addCleanup(instance1.close)
         token_service = instance._token_service
         token_service1 = instance1._token_service
         token_service2 = instance2._token_service

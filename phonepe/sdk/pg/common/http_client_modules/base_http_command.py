@@ -41,9 +41,9 @@ class BaseHttpCommand:
         429: TooManyRequests
     }
 
-    def __init__(self, host_url: str, http_client_config: HttpClientConfig = None) -> None:
+    def __init__(self, host_url: str, http_client_config: HttpClientConfig) -> None:
         self._host_url = host_url
-        self._http_client_config = http_client_config or HttpClientConfig()
+        self._http_client_config = http_client_config
         # Each BaseHttpCommand gets its own dedicated Session/connection pool, sized and tuned
         # per its HttpClientConfig - NOT a single shared session across every host/merchant in
         # the process. This is what makes pool_size/keep_alive/timeouts genuinely configurable

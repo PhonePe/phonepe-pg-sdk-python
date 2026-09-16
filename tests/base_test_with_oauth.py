@@ -67,3 +67,11 @@ class BaseTestWithOauth(TestCase):
                                                                                 client_secret="client_secret",
                                                                                 env=Env.SANDBOX,
                                                                                 should_publish_events=False)
+
+        # Close the clients when the test finishes. Without this, every test leaves behind a
+        # cached client whose background token-refresh thread stays alive for the rest of the
+        # session; one of those can wake mid-test and issue an unmocked OAuth call, which
+        # `responses` records and which then breaks other tests' call-count assertions.
+        self.addCleanup(BaseTestWithOauth.standard_checkout_client.close)
+        self.addCleanup(BaseTestWithOauth.custom_checkout_client.close)
+        self.addCleanup(BaseTestWithOauth.subscription_client.close)

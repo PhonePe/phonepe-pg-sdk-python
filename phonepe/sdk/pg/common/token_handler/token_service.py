@@ -90,10 +90,9 @@ class TokenService:
         credential_config: CredentialConfig,
         env: Env,
         event_publisher: EventPublisher,
-        http_client_config: HttpClientConfig = None,
+        http_client_config: HttpClientConfig,
     ) -> None:
         self._credential_config = credential_config
-        self._http_command = BaseHttpCommand(host_url=get_oauth_base_url(env), http_client_config=http_client_config)
         self.event_publisher = event_publisher
         self.event_publisher.send(
             build_init_client_event(event_name=EventType.TOKEN_SERVICE_INITIALIZED)
@@ -103,22 +102,22 @@ class TokenService:
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._background_thread = None
+        # the owner (BaseClient) has a reference to close(). All I/O happens in start().
+        self._http_command = BaseHttpCommand(host_url=get_oauth_base_url(env),
+                                             http_client_config=http_client_config)
 
-        # If the fetch below fails fast, this raises and BaseClient never gets a reference to
-        # close self._http_command's already-started sweep thread - close it here first.
-        try:
-            # Make exactly one synchronous attempt right now, with NO sleep-based retry on this
-            # (the constructing) thread. A genuine client-side error fails fast and propagates
-            # (client construction raises). Any transient failure is logged and left for the
-            # background thread - started immediately below - to keep retrying with backoff.
-            self._fetch_initial_token_or_defer_to_background()
-        except Exception:
-            self._http_command.close()
-            raise
+    def start(self):
+        """Performs the one eager token fetch and starts the proactive refresh thread.
+        Kept out of __init__ so the owner can register this instance for cleanup first and
+        close() it if this raises."""
+        # Exactly one synchronous attempt, with NO sleep-based retry on this (the calling)
+        # thread. A genuine client-side error fails fast and propagates. Any transient failure
+        # is logged and left to the background thread - started below - to retry with backoff.
+        self._fetch_initial_token_or_defer_to_background()
 
-        # Start the background thread now regardless of whether the fetch above succeeded: if it
-        # already has a token, this proactively refreshes it at half-life; if it doesn't yet
-        # (transient failure above), this immediately takes over retrying instead.
+        # Started regardless of whether the fetch above succeeded: if a token was obtained this
+        # proactively refreshes it at half-life; if not (transient failure), it takes over
+        # retrying immediately.
         self._background_thread = threading.Thread(
             target=self._background_refresh_loop, name="PhonePeTokenRefresher", daemon=True,
         )

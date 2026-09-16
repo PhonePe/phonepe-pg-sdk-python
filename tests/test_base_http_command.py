@@ -26,6 +26,7 @@ from phonepe.sdk.pg.common.exceptions import (
 )
 from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttpCommand
 from phonepe.sdk.pg.common.http_client_modules.http_method_type import HttpMethodType
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 
 BASE_URL = "https://api.phonepe.com/test"
 PATH = "/ping"
@@ -38,7 +39,24 @@ class TestBaseHttpCommand(TestCase):
     after a single attempt, with no built-in retry/backoff."""
 
     def setUp(self):
-        self.command = BaseHttpCommand(host_url=BASE_URL)
+        self.command = BaseHttpCommand(host_url=BASE_URL, http_client_config=HttpClientConfig())
+        self.addCleanup(self.command.close)
+
+    def test_http_client_config_is_required(self):
+        # The caller owns the config, so there is no silent fallback to defaults - that would
+        # give a differently sized/tuned pool than the one the merchant configured.
+        self.assertRaises(TypeError, BaseHttpCommand, host_url=BASE_URL)
+
+    def test_http_client_config_is_used_as_given(self):
+        config = HttpClientConfig(pool_size=3, keep_alive_seconds=7,
+                                  connect_timeout_seconds=2, read_timeout_seconds=11)
+        command = BaseHttpCommand(host_url=BASE_URL, http_client_config=config)
+        self.addCleanup(command.close)
+
+        assert command._http_client_config is config
+        adapter = command._session.get_adapter(BASE_URL)
+        assert adapter._keep_alive_seconds == 7
+        assert adapter._pool_connections == 3
 
     @responses.activate
     def test_get_success_single_call(self):

@@ -123,6 +123,7 @@ class TestCustomCheckoutClient(TestCase):
         self.set_first_token_mock()
         BaseCustomCheckoutClientForTest.set_client()
         standard_checkout_client = BaseCustomCheckoutClientForTest.custom_checkout_client
+        self.addCleanup(standard_checkout_client.close)
 
         responses.add(responses.GET, check_status_url, status=200, body="", json=json.loads(response_string),
                       match=[

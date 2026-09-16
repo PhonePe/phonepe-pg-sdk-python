@@ -69,6 +69,19 @@ def _add_long_lived_oauth_mock():
 class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutClientForTest,
                           BaseSubscriptionClientForTest):
 
+    def setUp(self) -> None:
+        # Python's MRO only runs the first parent's setUp(), so build the other two clients
+        # explicitly - otherwise their class attributes hold a stale client from another test.
+        BaseStandardCheckoutClientForTest.setUp(self)
+        BaseCustomCheckoutClientForTest.setUp(self)
+        BaseSubscriptionClientForTest.setUp(self)
+
+    def _close_after_test(self, *clients):
+        # Extra singletons built by a test must be closed, else their background threads
+        # (sweeper / token refresher) survive for the rest of the session.
+        for client in clients:
+            self.addCleanup(client.close)
+
     def test_singleton_via_get_instance(self):
         standard_checkout_client = StandardCheckoutClient.get_instance(client_id="client_id",
                                                                        client_version=1,
@@ -103,6 +116,7 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
         assert instance2 is StandardCheckoutClient.get_instance("client_id_03", "client_secret3", 1, Env.SANDBOX)
         self.assertTrue(
             instance is not instance2)
+        self._close_after_test(instance, instance2)
 
     @responses.activate
     def test_singleton_treats_omitted_and_explicit_default_http_client_config_as_equivalent(self):
@@ -133,6 +147,7 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
             http_client_config=HttpClientConfig(pool_size=5),
         )
         assert instance_custom is not instance_default
+        self._close_after_test(instance_default, instance_custom)
 
     @responses.activate
     def test_custom_checkout_singleton_via_get_instance(self):
@@ -169,6 +184,7 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
         )
         self.assertTrue(
             new_instance is not CustomCheckoutClient.get_instance("client_id_02", "client_secret", 1, Env.SANDBOX))
+        self._close_after_test(instance, new_instance)
 
     def test_subscription_singleton_via_get_instance(self):
         subscription_client = SubscriptionClient.get_instance(client_id="client_id",
@@ -199,6 +215,7 @@ class TestSingletonObject(BaseStandardCheckoutClientForTest, BaseCustomCheckoutC
         )
         self.assertTrue(
             new_instance is not SubscriptionClient.get_instance("client_id_02", "client_secret", 1, Env.SANDBOX))
+        self._close_after_test(instance, new_instance)
 
     def set_first_token_mock(self, cur_time):
         two_sec_more_cur = int(cur_time + 4)

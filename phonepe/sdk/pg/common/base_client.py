@@ -98,6 +98,7 @@ class BaseClient:
                 http_client_config=self.http_client_config,
             )
             closables.append(self._token_service)
+            self._token_service.start()
 
             self.event_publisher.start_publishing_events(
                 auth_token_supplier=self._token_service.get_auth_token

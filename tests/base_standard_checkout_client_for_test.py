@@ -51,18 +51,19 @@ class BaseStandardCheckoutClientForTest(TestCase):
             client_secret="client_secret",
             env=Env.SANDBOX,
             should_publish_events=False)
+        self.addCleanup(BaseStandardCheckoutClientForTest.standard_checkout_client.close)
 
     @staticmethod
     def get_standard_checkout_client():
-        if BaseStandardCheckoutClientForTest.standard_checkout_client is None:
-            with responses.RequestsMock(assert_all_requests_are_fired=False) as mock:
-                mock.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                        json=_TOKEN_RESPONSE)
-                BaseStandardCheckoutClientForTest.standard_checkout_client = StandardCheckoutClient.get_instance(
-                    client_id="client_id",
-                    client_version=1,
-                    client_secret="client_secret",
-                    env=Env.SANDBOX,
-                    should_publish_events=False)
-            return BaseStandardCheckoutClientForTest.standard_checkout_client
+        # Always resolve through get_instance(): the cached attribute can point at a client a
+        # previous test closed (and therefore evicted from the singleton cache).
+        with responses.RequestsMock(assert_all_requests_are_fired=False) as mock:
+            mock.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                     json=_TOKEN_RESPONSE)
+            BaseStandardCheckoutClientForTest.standard_checkout_client = StandardCheckoutClient.get_instance(
+                client_id="client_id",
+                client_version=1,
+                client_secret="client_secret",
+                env=Env.SANDBOX,
+                should_publish_events=False)
         return BaseStandardCheckoutClientForTest.standard_checkout_client

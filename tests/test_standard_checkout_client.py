@@ -118,6 +118,7 @@ class TestStandardCheckoutClient(TestCase):
         """
         self.set_first_token_mock()
         standard_checkout_client = BaseStandardCheckoutClientForTest.get_standard_checkout_client()
+        self.addCleanup(standard_checkout_client.close)
 
         responses.add(responses.GET, check_status_url, status=200, body="", json=json.loads(response_string),
                       match=[
@@ -147,6 +148,7 @@ class TestStandardCheckoutClient(TestCase):
         self.assertRaises(UnauthorizedAccess,
                           standard_checkout_client.get_order_status, merchant_transaction_id)
         standard_checkout_client = BaseStandardCheckoutClientForTest.get_standard_checkout_client()
+        self.addCleanup(standard_checkout_client.close)
 
         response_object = standard_checkout_client.get_order_status(
             merchant_order_id=merchant_transaction_id)

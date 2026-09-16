@@ -14,6 +14,7 @@
 
 import threading
 import time
+from collections import Counter
 from unittest import TestCase
 
 import responses
@@ -31,11 +32,26 @@ def _bad_credentials_oauth_mock():
                         "context": {"error_description": "Client authentication failure"}})
 
 
-def _new_threads_still_alive_after(before_names, settle_seconds=0.5):
-    """Returns thread names newly alive that weren't before (after a brief settle delay)."""
-    time.sleep(settle_seconds)
-    after_names = set(t.name for t in threading.enumerate())
-    return after_names - before_names
+# Threads the SDK itself starts. Restricting the assertions to these keeps them immune to
+# unrelated worker threads (e.g. a shared concurrent.futures pool) that other libraries or
+# tests may spawn lazily inside the measurement window.
+SDK_THREAD_NAMES = ("RecyclingHTTPAdapterSweeper", "PhonePeTokenRefresher", "APScheduler")
+
+
+def _sdk_threads():
+    """Counts live SDK threads by name (a Counter, so a second instance is still detected)."""
+    return Counter(t.name for t in threading.enumerate() if t.name in SDK_THREAD_NAMES)
+
+
+def _new_threads_still_alive_after(before, timeout_seconds=3.0):
+    """SDK threads alive now that weren't before, polled briefly so a thread that is still
+    winding down isn't reported as leaked."""
+    deadline = time.time() + timeout_seconds
+    while True:
+        leaked = _sdk_threads() - before
+        if not leaked or time.time() > deadline:
+            return dict(leaked)
+        time.sleep(0.05)
 
 
 class TestBaseClientConstructionCleanup(TestCase):
@@ -46,7 +62,7 @@ class TestBaseClientConstructionCleanup(TestCase):
     @responses.activate
     def test_no_thread_leak_when_construction_fails_fast_events_disabled(self):
         _bad_credentials_oauth_mock()
-        before = set(t.name for t in threading.enumerate())
+        before = _sdk_threads()
 
         self.assertRaises(PhonePeException, BaseClient,
                           client_id="client_id", client_secret="client_secret", client_version=1,
@@ -59,7 +75,7 @@ class TestBaseClientConstructionCleanup(TestCase):
     def test_no_thread_leak_when_construction_fails_fast_events_enabled(self):
         # should_publish_events=True also exercises the event-ingestion/QueuedEventPublisher path.
         _bad_credentials_oauth_mock()
-        before = set(t.name for t in threading.enumerate())
+        before = _sdk_threads()
 
         self.assertRaises(PhonePeException, BaseClient,
                           client_id="client_id", client_secret="client_secret", client_version=1,
@@ -76,7 +92,7 @@ class TestBaseClientConstructionCleanup(TestCase):
                             "refresh_token": "refresh_token", "expires_in": 5014,
                             "issued_at": int(time.time()), "expires_at": int(time.time()) + 5014,
                             "session_expires_at": int(time.time()) + 5014, "token_type": "O-Bearer"})
-        before = set(t.name for t in threading.enumerate())
+        before = _sdk_threads()
 
         client = BaseClient(client_id="client_id", client_secret="client_secret", client_version=1,
                             env=Env.SANDBOX, should_publish_events=True)
@@ -99,7 +115,7 @@ class TestBaseClientConstructionCleanup(TestCase):
                             "refresh_token": "refresh_token", "expires_in": 5014,
                             "issued_at": int(time.time()), "expires_at": int(time.time()) + 5014,
                             "session_expires_at": int(time.time()) + 5014, "token_type": "O-Bearer"})
-        before = set(t.name for t in threading.enumerate())
+        before = _sdk_threads()
 
         with mock_patch.object(QueuedEventPublisher, "start_publishing_events",
                                side_effect=RuntimeError("simulated scheduler start failure")):
@@ -132,6 +148,9 @@ class TestBaseClientClose(TestCase):
         def _boom():
             raise RuntimeError("simulated failure closing the event publisher")
 
+        # The real close() is still needed at teardown, otherwise this test's scheduler thread
+        # (deliberately never shut down below) survives for the rest of the session.
+        self.addCleanup(client.event_publisher.close)
         client.event_publisher.close = _boom
         client.close()
 
@@ -165,3 +184,41 @@ class TestBaseClientClose(TestCase):
         client.close()
 
         self.assertEqual(["publisher", "sender"], order)
+
+
+class TestBaseClientTokenServiceStart(TestCase):
+    """TokenService's eager fetch happens in start(), called by BaseClient after the instance is
+    registered for cleanup - so a failure there must not leak its background threads."""
+
+    @responses.activate
+    def test_no_thread_leak_when_token_service_start_raises(self):
+        _bad_credentials_oauth_mock()
+        before = _sdk_threads()
+
+        # Bad credentials make start()'s eager fetch fail fast, exactly as in production.
+        self.assertRaises(PhonePeException, BaseClient,
+                          client_id="client_id", client_secret="client_secret", client_version=1,
+                          env=Env.SANDBOX, should_publish_events=True)
+
+        leaked = _new_threads_still_alive_after(before)
+        assert not leaked, f"threads leaked after TokenService.start() raised: {leaked}"
+
+    @responses.activate
+    def test_token_service_constructor_does_no_network_io(self):
+        # Construction is pure wiring: no OAuth call until start().
+        from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
+        from phonepe.sdk.pg.common.configs.credential_config import CredentialConfig
+        from phonepe.sdk.pg.common.events.publisher.event_publisher import EventPublisher
+        from phonepe.sdk.pg.common.token_handler.token_service import TokenService
+
+        _bad_credentials_oauth_mock()
+        token_service = TokenService(
+            credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                               client_secret="client_secret"),
+            env=Env.SANDBOX, event_publisher=EventPublisher(),
+            http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+
+        assert len(responses.calls) == 0, "constructor performed network I/O"
+        self.assertRaises(PhonePeException, token_service.start)
+        assert len(responses.calls) == 1

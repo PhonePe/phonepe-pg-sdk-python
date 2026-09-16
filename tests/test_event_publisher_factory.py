@@ -16,6 +16,7 @@ from unittest import TestCase
 
 from phonepe.sdk.pg.common.events.publisher.event_publisher_factory import EventPublisherFactory
 from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttpCommand
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 
 
 class TestEventPublisherFactory(TestCase):
@@ -24,8 +25,8 @@ class TestEventPublisherFactory(TestCase):
         """Each factory instance now builds its own publisher (per-instance, not a process-wide
         singleton) - previously every client after the first silently discarded its own
         event_sender."""
-        sender1 = BaseHttpCommand(host_url="")
-        sender2 = BaseHttpCommand(host_url="test")
+        sender1 = BaseHttpCommand(host_url="", http_client_config=HttpClientConfig())
+        sender2 = BaseHttpCommand(host_url="test", http_client_config=HttpClientConfig())
         self.addCleanup(sender1.close)
         self.addCleanup(sender2.close)
 
@@ -43,7 +44,7 @@ class TestEventPublisherFactory(TestCase):
 
     def test_get_event_publisher_memoizes_within_the_same_factory_instance(self):
         """Repeated calls on the SAME factory instance should still return the same publisher."""
-        sender = BaseHttpCommand(host_url="")
+        sender = BaseHttpCommand(host_url="", http_client_config=HttpClientConfig())
         self.addCleanup(sender.close)
         factory = EventPublisherFactory(event_sender=sender)
 

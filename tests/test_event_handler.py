@@ -28,14 +28,17 @@ from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttp
 from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
 from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.env import Env, get_oauth_base_url, get_event_ingestion_base_url
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 
 
 class TestEventPublisher(TestCase):
     def test_event_batch_maker_max_num_events_in_batch(self):
-        event_sender = BaseHttpCommand(host_url="")
+        event_sender = BaseHttpCommand(host_url="", http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
+        self.addCleanup(queued_event_handler.close)
         events_pushed = 20
         for event_id in range(events_pushed):
             queued_event_handler.send(BaseEvent(merchant_order_id=""))
@@ -46,10 +49,12 @@ class TestEventPublisher(TestCase):
             assert len(batch) == min(events_pushed, 100)
 
     def test_event_batch_divides_equally(self):
-        event_sender = BaseHttpCommand(host_url="")
+        event_sender = BaseHttpCommand(host_url="", http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
+        self.addCleanup(queued_event_handler.close)
         events_pushed = 20
         for event_id in range(events_pushed):
             queued_event_handler.send(BaseEvent(merchant_order_id=""))
@@ -60,10 +65,12 @@ class TestEventPublisher(TestCase):
             assert len(batch) == min(events_pushed, 2)
 
     def test_event_batch_some_left_over(self):
-        event_sender = BaseHttpCommand(host_url="")
+        event_sender = BaseHttpCommand(host_url="", http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
+        self.addCleanup(queued_event_handler.close)
         max_events_in_batch = 5
         split_over_events = 3
         events_pushed = 4 * max_events_in_batch + split_over_events
@@ -79,11 +86,13 @@ class TestEventPublisher(TestCase):
 
     @responses.activate
     def testSendsTokenFetchFailureEvent(self):
-        event_sender = BaseHttpCommand(host_url=get_event_ingestion_base_url(Env.SANDBOX))
+        event_sender = BaseHttpCommand(host_url=get_event_ingestion_base_url(Env.SANDBOX), http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         cur_time = time.time_ns()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
+        self.addCleanup(queued_event_handler.close)
 
         token_expired_response = """{
                                                     "access_token": "access_token",
@@ -104,8 +113,9 @@ class TestEventPublisher(TestCase):
                                                                         client_version=1,
                                                                         client_secret="client_secret"),
                                      env=Env.PRODUCTION,
-                                     event_publisher=queued_event_handler)
+                                     event_publisher=queued_event_handler, http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
 
         cur_time = int(time.time_ns())  # Example value for cur_time
         two_sec_more_cur = int(cur_time + 200)
@@ -156,10 +166,12 @@ class TestEventPublisher(TestCase):
 
     @responses.activate
     def testSendsTokenFetchSuccessEvent(self):
-        event_sender = BaseHttpCommand(host_url=get_event_ingestion_base_url(Env.SANDBOX))
+        event_sender = BaseHttpCommand(host_url=get_event_ingestion_base_url(Env.SANDBOX), http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
+        self.addCleanup(queued_event_handler.close)
 
         cur_time = int(time.time_ns())  # Example value for cur_time
         two_sec_more_cur = int(cur_time + 200)
@@ -182,8 +194,9 @@ class TestEventPublisher(TestCase):
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=queued_event_handler)
+                                     event_publisher=queued_event_handler, http_client_config=HttpClientConfig())
         self.addCleanup(token_service.close)
+        token_service.start()
 
         event_response = responses.add(responses.POST, get_event_ingestion_base_url(Env.SANDBOX) + EVENT_BULK_ENDPOINT,
                                        status=200,
