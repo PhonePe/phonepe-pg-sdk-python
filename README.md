@@ -110,6 +110,7 @@ http_client_config = HttpClientConfig(
     keep_alive_seconds=60,      # proactively recycle connections idle longer than this
     connect_timeout_seconds=3,  # max time to establish the TCP/TLS connection
     read_timeout_seconds=30,    # max time to wait for a response once the request is sent
+    pool_block=True,            # wait for a free pooled connection instead of overflowing the pool
 )
 
 standard_phonepe_client = StandardCheckoutClient.get_instance(
@@ -122,7 +123,8 @@ standard_phonepe_client = StandardCheckoutClient.get_instance(
 ```
 
 If `http_client_config` is omitted, the SDK uses the defaults shown above (`pool_size=10`,
-`keep_alive_seconds=60`, `connect_timeout_seconds=3`, `read_timeout_seconds=30`).
+`keep_alive_seconds=60`, `connect_timeout_seconds=3`, `read_timeout_seconds=30`,
+`pool_block=True`).
 
 **Why these four settings trade off against each other:**
 
@@ -144,6 +146,15 @@ If `http_client_config` is omitted, the SDK uses the defaults shown above (`pool
   slower/less reliable infrastructure (or calling latency-sensitive endpoints like autoPay APIs)
   may need to raise `read_timeout_seconds` to avoid timing out on otherwise-successful, just-slow
   responses.
+- **`pool_block`** decides what happens when all `pool_size` connections are already busy and
+  another request needs one. With the default `True`, the request waits for one to be released,
+  so `pool_size` is a genuine cap on concurrent connections. With `False`, the request instead
+  opens an extra connection outside the pool and throws it away immediately after that single
+  request - so a traffic burst pays a fresh TCP/TLS handshake per overflow request and
+  `pool_size` no longer limits anything. Waiting cannot deadlock: every in-flight request
+  releases its slot when it completes or hits `read_timeout_seconds`, so that timeout (not
+  `connect_timeout_seconds`) bounds how long a request can wait for a slot. If you set
+  `pool_block=False`, size `pool_size` for your peak concurrency to keep overflow rare.
 
 ### Releasing resources with `close()`
 

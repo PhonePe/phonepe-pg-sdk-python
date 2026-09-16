@@ -54,6 +54,7 @@ class BaseHttpCommand:
             pool_connections=self._http_client_config.pool_size,
             pool_maxsize=self._http_client_config.pool_size,
             keep_alive_seconds=self._http_client_config.keep_alive_seconds,
+            pool_block=self._http_client_config.pool_block,
         )
         self._session.mount("http://", adapter)
         self._session.mount("https://", adapter)

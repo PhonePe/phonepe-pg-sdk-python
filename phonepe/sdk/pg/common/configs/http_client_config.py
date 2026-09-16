@@ -52,12 +52,22 @@ class HttpClientConfig:
         Maximum time to wait for the server to send a response once the request has been sent.
         Default 30 seconds (generous enough to accommodate slower endpoints such as autoPay
         APIs).
+    pool_block: bool
+        What to do when all `pool_size` connections are already in use and another request
+        needs one. Default True: the request waits for a pooled connection to be released.
+        With False (urllib3's default) the request instead opens an extra connection outside
+        the pool, which is discarded straight after that one request - so `pool_size` stops
+        being a real limit and bursts of traffic pay a fresh TCP/TLS handshake per overflow
+        request. Waiting cannot deadlock: every in-flight request releases its slot when it
+        completes or hits `read_timeout_seconds`, so that timeout - not
+        `connect_timeout_seconds` - bounds how long a request can wait for a slot.
     """
 
     pool_size: int = 10
     keep_alive_seconds: float = 60
     connect_timeout_seconds: float = 3
     read_timeout_seconds: float = 30
+    pool_block: bool = True
 
     def __post_init__(self):
         if self.pool_size <= 0:

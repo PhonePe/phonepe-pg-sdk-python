@@ -20,7 +20,27 @@ from unittest import TestCase
 
 import requests
 
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
+from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttpCommand
+from phonepe.sdk.pg.common.http_client_modules.http_method_type import HttpMethodType
 from phonepe.sdk.pg.common.http_client_modules.recycling_http_adapter import RecyclingHTTPAdapter
+
+
+class _SlowHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):
+        # Slow enough that a concurrent burst genuinely overlaps and contends for the pool.
+        time.sleep(0.5)
+        body = b"ok"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -276,3 +296,67 @@ class TestRecyclingHTTPAdapter(TestCase):
             "misattributing it to an unrelated future connection reusing the same id()"
         )
 
+
+
+class TestPoolBlocking(TestCase):
+    """Without pool_block=True, urllib3 lets a burst of concurrent requests overflow the pool
+    with throwaway, unpooled connections instead of waiting for a pooled slot - so pool_size
+    stops being a real limit and every overflow request pays a fresh TCP/TLS handshake."""
+
+    def setUp(self):
+        self.server = _ThreadingHTTPServer(("127.0.0.1", 0), _SlowHandler)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.shutdown)
+
+    def _connections_opened_for_concurrent_burst(self, http_client_config, burst):
+        command = BaseHttpCommand(host_url=f"http://127.0.0.1:{self.port}",
+                                  http_client_config=http_client_config)
+        self.addCleanup(command.close)
+
+        errors = []
+
+        def _one():
+            try:
+                command.request(url="/", method=HttpMethodType.GET)
+            except Exception as exception:  # pragma: no cover - only on an unexpected failure
+                errors.append(exception)
+
+        threads = [threading.Thread(target=_one) for _ in range(burst)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert not errors, f"requests failed: {errors}"
+        assert not any(thread.is_alive() for thread in threads), "a request never completed"
+
+        pool_manager = command._session.get_adapter(f"http://127.0.0.1:{self.port}/").poolmanager
+        pool = pool_manager.pools[list(pool_manager.pools.keys())[0]]
+        # num_connections counts every TCP connection urllib3 opened for this pool, including
+        # the overflow ones it discarded right after use.
+        return pool.num_connections
+
+    def test_concurrent_burst_does_not_exceed_pool_size_by_default(self):
+        opened = self._connections_opened_for_concurrent_burst(
+            HttpClientConfig(pool_size=2, read_timeout_seconds=10), burst=6)
+        assert opened <= 2, (
+            f"opened {opened} connections for a pool_size=2 pool - requests overflowed the pool "
+            "with unpooled connections instead of waiting for a free slot"
+        )
+
+    def test_pool_block_can_be_disabled(self):
+        opened = self._connections_opened_for_concurrent_burst(
+            HttpClientConfig(pool_size=2, read_timeout_seconds=10, pool_block=False), burst=6)
+        assert opened > 2, (
+            f"pool_block=False should allow overflow connections, but only {opened} were opened"
+        )
+
+    def test_pool_block_defaults_to_true_and_reaches_the_pool(self):
+        command = BaseHttpCommand(host_url=f"http://127.0.0.1:{self.port}",
+                                  http_client_config=HttpClientConfig())
+        self.addCleanup(command.close)
+        assert HttpClientConfig().pool_block is True
+        pool = command._session.get_adapter("http://x/").poolmanager.connection_from_url(
+            f"http://127.0.0.1:{self.port}/")
+        assert pool.block is True, "pool_block never reached the underlying urllib3 pool"
