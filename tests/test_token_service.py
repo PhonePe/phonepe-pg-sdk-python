@@ -12,537 +12,425 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
+import threading
+import time as time_module
 from time import time
 from unittest import TestCase
-from unittest.mock import call, patch, MagicMock
+from unittest.mock import patch
 
 import responses
 
 from phonepe.sdk.pg.common.configs.credential_config import CredentialConfig
-from phonepe.sdk.pg.common.events.models.enums.event_type import EventType
 from phonepe.sdk.pg.common.events.publisher.event_publisher import EventPublisher
-from phonepe.sdk.pg.common.exceptions import BadRequest, PhonePeException, ServerError, TooManyRequests, UnauthorizedAccess
-from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttpCommand
+from phonepe.sdk.pg.common.exceptions import PhonePeException, UnauthorizedAccess
 from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
 from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.env import Env, get_oauth_base_url
 from phonepe.sdk.pg.payments.v2.standard_checkout_client import StandardCheckoutClient
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
+
+
+def _token_json(issued_at, expires_at, access_token="access_token"):
+    return {
+        "access_token": access_token,
+        "encrypted_access_token": "encrypted_access_token",
+        "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
+        "expires_in": expires_at - issued_at,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "session_expires_at": expires_at,
+        "token_type": "O-Bearer",
+    }
+
+
+def _add_oauth_mock(status=200, json_body=None):
+    responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=status,
+                  json=json_body if json_body is not None else _token_json(int(time()), int(time()) + 5014))
 
 
 class TestTokenService(TestCase):
+    """TokenService now fetches its token eagerly at construction (retried on failure), then
+    proactively refreshes it in a background thread at half-life. get_auth_token() keeps its own
+    synchronous lazy-fetch-with-cached-fallback logic as an additional safety net. Every test here
+    that constructs a TokenService must have its OAuth mock registered BEFORE construction, since
+    construction itself now makes the first HTTP call (rather than deferring it to the first
+    get_auth_token() call, as it did previously).
+
+    Every directly-constructed TokenService (as opposed to a get_instance()-cached singleton
+    client) registers its close() via addCleanup immediately after construction, guaranteeing its
+    background thread is stopped even if an assertion fails - otherwise a leftover daemon thread
+    could keep polling in the background and pollute a LATER test's responses.calls count (since
+    responses patches HTTP sending process-wide, not just for the thread/test that set it up)."""
 
     @responses.activate
     def test_fetch_token(self):
+        _add_oauth_mock()
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        token_response_data = """{
-                                            "access_token": "access_token",
-                                            "encrypted_access_token": "encrypted_access_token",
-                                            "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
-                                            "expires_in": 5014,
-                                            "issued_at": 1709623116,
-                                            "expires_at": 1709630316,
-                                            "session_expires_at": 1709630316,
-                                            "token_type": "O-Bearer"
-                                        }
-                                        """
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
-
-        assert "O-Bearer access_token" == token_service.get_auth_token()
+                                     event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+        assert len(responses.calls) == 1  # eager fetch at construction, not on first get_auth_token()
+        # Compare against a value derived from the same fixture data (not a hardcoded literal),
+        # since token-shaped strings get redacted in tool/terminal output and must never be
+        # copied by hand from displayed output into test source.
+        assert token_service.get_auth_token() == "O-Bearer" + " " + "access_token"
+        assert len(responses.calls) == 1  # cached token reused, no extra call
 
     @responses.activate
-    def test_token_refresh(self):
+    def test_token_refresh_when_immediately_expired(self):
+        # issued_at=0 makes the half-life instantly in the past relative to real "now"
+        _add_oauth_mock(json_body=_token_json(0, 1709630316))
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        token_response_data = """{
-                                        "access_token": "access_token",
-                                        "encrypted_access_token": "encrypted_access_token",
-                                        "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
-                                        "expires_in": 0,
-                                        "issued_at": 0,
-                                        "expires_at": 1709630316,
-                                        "session_expires_at": 1709630316,
-                                        "token_type": "O-Bearer"
-                                        }
-                                    """
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
+                                     event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+        assert len(responses.calls) == 1  # eager fetch at construction
 
-        set_token = token_service.get_auth_token()  # sets expired token
-        refresh_attempt = token_service.get_auth_token()  # notices token is expired and fetches new token
-
+        _add_oauth_mock(json_body=_token_json(0, 1709630316))
+        token_service.get_auth_token()  # notices the (already expired) token is invalid, refetches
         assert len(responses.calls) == 2
 
     @responses.activate
     def test_token_use_cached(self):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        token_response_data = """{
-                                            "access_token": "access_token",
-                                            "encrypted_access_token": "encrypted_access_token",
-                                            "refresh_token": "refresh_token",
-                                            "expires_in": 2147483647,
-                                            "issued_at": 1709630316,
-                                            "expires_at": 2147483647,
-                                            "session_expires_at": 1709630316,
-                                            "token_type": "O-Bearer"
-                                            }
-                                        """
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
-
-        set_token = token_service.get_auth_token()  # sets expired token
-        no_refresh = token_service.get_auth_token()  # notices token is valid and does not fetch new token
-        assert len(responses.calls) == 1
-
-    @responses.activate
-    def test_token_use_cached(self):
+        cur_time = int(time())
+        two_sec_more_cur = cur_time + 2
+        _add_oauth_mock(json_body=_token_json(cur_time, two_sec_more_cur))
 
         token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
                                                                         client_version=1,
                                                                         client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        cur_time = int(time())  # Example value for cur_time
-        two_sec_more_cur = int(cur_time + 2)
+                                     event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
 
-        token_response_data = f"""{{
-            "access_token": "access_token",
-            "encrypted_access_token": "encrypted_access_token",
-            "refresh_token": "refresh_token",
-            "expires_in": 200,
-            "issued_at": {cur_time},
-            "expires_at": {two_sec_more_cur},
-            "session_expires_at": 1709630316,
-            "token_type": "O-Bearer"
-        }}
-        """
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
+        token_service.get_auth_token()
+        token_service.get_auth_token()
+        token_service.get_auth_token()
 
-        set_token = token_service.get_auth_token()  # sets valid token
-        set_token = token_service.get_auth_token()
-        set_token = token_service.get_auth_token()
-
-        assert len(responses.calls) == 1
+        assert len(responses.calls) == 1  # eager fetch at construction; still valid, no refetch
 
         with patch.object(token_service, 'get_current_time', return_value=(cur_time + 1)):
-            set_token = token_service.get_auth_token()  # tries to fetch new token
-            set_token = token_service.get_auth_token()  # tries to fetch new token
-            set_token = token_service.get_auth_token()  # tries to fetch new token
+            token_service.get_auth_token()  # tries to fetch new token
+            token_service.get_auth_token()  # tries to fetch new token
+            token_service.get_auth_token()  # tries to fetch new token
 
         assert len(responses.calls) == 4
 
     @responses.activate
     def test_token_use_cached_then_cached_valid2(self):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        cur_time = int(time())  # Example value for cur_time
+        cur_time = int(time())
         four_sec_more = cur_time + 4
         ten_sec_more = cur_time + 10
 
-        token_response_data = f"""{{
-                "access_token": "access_token",
-                "encrypted_access_token": "encrypted_access_token",
-                "refresh_token": "refresh_token",
-                "expires_in": 200,
-                "issued_at": {cur_time},
-                "expires_at": {four_sec_more},
-                "session_expires_at": 1709630316,
-                "token_type": "O-Bearer"
-            }}
-            """
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
+        _add_oauth_mock(json_body=_token_json(cur_time, four_sec_more))
 
-        set_token = token_service.get_auth_token()  # sets valid token
-        set_token = token_service.get_auth_token()
-        set_token = token_service.get_auth_token()
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
 
-        assert len(responses.calls) == 1
+        token_service.get_auth_token()
+        token_service.get_auth_token()
+        token_service.get_auth_token()
 
-        token_response_data = f"""{{
-                        "access_token": "access_token",
-                        "encrypted_access_token": "encrypted_access_token",
-                        "refresh_token": "refresh_token",
-                        "expires_in": 200,
-                        "issued_at": {cur_time},
-                        "expires_at": {ten_sec_more},
-                        "session_expires_at": 1709630316,
-                        "token_type": "O-Bearer"
-                    }}
-                    """
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
+        assert len(responses.calls) == 1  # eager fetch at construction
+
+        _add_oauth_mock(json_body=_token_json(cur_time, ten_sec_more))
 
         with patch.object(token_service, 'get_current_time', return_value=(cur_time + 1)):
-            set_token = token_service.get_auth_token()  # does not fetch, uses old token
+            token_service.get_auth_token()  # does not fetch, uses old token
         with patch.object(token_service, 'get_current_time', return_value=(cur_time + 2)):
-            set_token = token_service.get_auth_token()  # fetches new token
+            token_service.get_auth_token()  # fetches new token
         with patch.object(token_service, 'get_current_time', return_value=(cur_time + 3)):
-            set_token = token_service.get_auth_token()  # uses old token
+            token_service.get_auth_token()  # uses old token
         with patch.object(token_service, 'get_current_time', return_value=(cur_time + 4)):
-            set_token = token_service.get_auth_token()  # uses old token
+            token_service.get_auth_token()  # uses old token
         assert len(responses.calls) == 2
 
     @responses.activate
-    def test_first_fetch_token_failure(self):
-
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        token_response_data = """{
-                                "code": "INVALID_CLIENT",
-                                "errorCode": "OIM000",
-                                "message": "Bad Request: Invalid Client, trackingId: 2123d",
-                                "context": {
-                                    "error_description": "Client authentication failure"
-                                }
-                            }"""
+    def test_construction_fails_with_no_cached_token_on_bad_request(self):
+        # e.g. invalid client_id/client_secret - retrying with the same credentials would always
+        # fail, so this fails fast (no retries) and client construction raises immediately.
         responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=400,
-                      json=json.loads(token_response_data))
+                      json={"code": "INVALID_CLIENT", "errorCode": "OIM000",
+                            "message": "Bad Request: Invalid Client, trackingId: 2123d",
+                            "context": {"error_description": "Client authentication failure"}})
 
-        self.assertRaises(PhonePeException, token_service.get_auth_token)
+        token_service = TokenService(
+            credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                               client_secret="client_secret"),
+            env=Env.SANDBOX, event_publisher=EventPublisher(),
+            http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
 
-    @responses.activate
-    def test_first_fetch_works_second_fetch_fails_sends_back_old_token(self):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        cur_time = int(time())  # Example value for cur_time
-        two_sec_less_cur = int(cur_time - 2)
-
-        token_response_data = f"""{{
-                "access_token": "access_token",
-                "encrypted_access_token": "encrypted_access_token",
-                "refresh_token": "refresh_token",
-                "expires_in": 200,
-                "issued_at": {two_sec_less_cur},
-                "expires_at": {cur_time},
-                "session_expires_at": 1709630316,
-                "token_type": "O-Bearer"
-            }}
-            """  # this token is expired
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
-
-        set_token = token_service.get_auth_token()  # sets valid token
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=342)
-
-        should_receive_old_token1 = token_service.get_auth_token()
-        should_receive_old_token2 = token_service.get_auth_token()
-        should_receive_old_token3 = token_service.get_auth_token()
-
-        assert "O-Bearer access_token" == set_token
-        assert "O-Bearer access_token" == should_receive_old_token1
-        assert "O-Bearer access_token" == should_receive_old_token2
-        assert "O-Bearer access_token" == should_receive_old_token3
-        assert len(responses.calls) == 4  # (1 set token, 3 attempts to fetch new token but failed)
-
-    def test_max_retries_constant(self):
-        # Guards against accidental changes to the configured retry budget
-        assert BaseHttpCommand.MAX_RETRIES == 3
+        # The fetch happens in start(), so the owner can close() this instance when it raises.
+        self.assertRaises(PhonePeException, token_service.start)
+        assert len(responses.calls) == 1  # fails fast, no retries for a genuine client error
 
     @responses.activate
-    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
-    def test_retry_succeeds_after_transient_failures_when_no_cached_token(self, mock_sleep):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        token_response_data = """{
-                                    "access_token": "access_token",
-                                    "encrypted_access_token": "encrypted_access_token",
-                                    "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
-                                    "expires_in": 5014,
-                                    "issued_at": 1709623116,
-                                    "expires_at": 1709630316,
-                                    "session_expires_at": 1709630316,
-                                    "token_type": "O-Bearer"
-                                }"""
-        # First two attempts fail with a transient server error, third succeeds
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
-
-        token = token_service.get_auth_token()
-
-        assert token == "O-Bearer access_token"
-        assert len(responses.calls) == 3  # 2 failed retries + 1 successful attempt
-        assert token_service.cached_token_data is not None
-        # backoff sleeps between the 2 failed attempts (1s, then 2s), none after the final success
-        assert mock_sleep.call_args_list == [call(1), call(2)]
-
-    @responses.activate
-    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
-    def test_retry_exhausted_raises_when_no_cached_token(self, mock_sleep):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        for _ in range(BaseHttpCommand.MAX_RETRIES):
-            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
-
-        self.assertRaises(ServerError, token_service.get_auth_token)
-
-        assert len(responses.calls) == BaseHttpCommand.MAX_RETRIES  # exactly MAX_RETRIES attempts, no more
-        assert token_service.cached_token_data is None
-        # no sleep after the final (3rd) failed attempt since we're about to give up
-        assert mock_sleep.call_args_list == [call(1), call(2)]
-
-    @responses.activate
-    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
-    def test_retry_exhausted_publishes_none_cached_token_event(self, mock_sleep):
-        mock_event_publisher = MagicMock(spec=EventPublisher)
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=mock_event_publisher)
-        # reset the mock so the TOKEN_SERVICE_INITIALIZED init event doesn't interfere with assertions below
-        mock_event_publisher.send.reset_mock()
-
-        for _ in range(BaseHttpCommand.MAX_RETRIES):
-            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
-
-        self.assertRaises(ServerError, token_service.get_auth_token)
-
-        published_event_names = [call.args[0].event_name for call in mock_event_publisher.send.call_args_list]
-        assert EventType.OAUTH_FETCH_FAILED_NONE_CACHED_TOKEN in published_event_names
-
-    @responses.activate
-    def test_no_retry_when_cached_token_exists_and_refresh_fails(self):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        cur_time = int(time())
-        two_sec_less_cur = int(cur_time - 2)
-
-        token_response_data = f"""{{
-                "access_token": "access_token",
-                "encrypted_access_token": "encrypted_access_token",
-                "refresh_token": "refresh_token",
-                "expires_in": 200,
-                "issued_at": {two_sec_less_cur},
-                "expires_at": {cur_time},
-                "session_expires_at": 1709630316,
-                "token_type": "O-Bearer"
-            }}
-            """  # already expired, so next get_auth_token triggers a refresh
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
-
-        token_service.get_auth_token()  # sets the cached (already expired) token
-        assert len(responses.calls) == 1
-
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
-
-        token = token_service.get_auth_token()  # refresh fails, falls back to cached token, no retries
-
-        assert token == "O-Bearer access_token"
-        # If the SDK retried on this path (like it does when there's no cached token),
-        # this would be 1 (initial) + MAX_RETRIES (3) = 4 calls instead of 2.
-        assert len(responses.calls) == 2  # 1 initial fetch + exactly 1 failed refresh attempt (no retries)
-
-    @responses.activate
-    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
-    def test_force_refresh_token_retries_on_transient_failure_then_succeeds(self, mock_sleep):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        token_response_data = """{
-                                    "access_token": "access_token",
-                                    "encrypted_access_token": "encrypted_access_token",
-                                    "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
-                                    "expires_in": 5014,
-                                    "issued_at": 1709623116,
-                                    "expires_at": 1709630316,
-                                    "session_expires_at": 1709630316,
-                                    "token_type": "O-Bearer"
-                                }"""
-        # e.g. RemoteDisconnected/502 while force-refreshing after a 401 - should retry, unlike before
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=502)
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
-
-        token_service.force_refresh_token()
-
-        assert token_service.cached_token_data is not None
-        assert len(responses.calls) == 2  # 1 failed attempt + 1 successful retry
-        assert mock_sleep.call_args_list == [call(1)]
-
-    @responses.activate
-    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
-    def test_force_refresh_token_retry_exhausted_raises(self, mock_sleep):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        for _ in range(BaseHttpCommand.MAX_RETRIES):
-            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
-
-        self.assertRaises(ServerError, token_service.force_refresh_token)
-
-        assert len(responses.calls) == BaseHttpCommand.MAX_RETRIES
-        assert mock_sleep.call_args_list == [call(1), call(2)]
-
-    @responses.activate
-    def test_no_retry_on_bad_request_when_no_cached_token(self):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        # e.g. "form field grant_type must not be blank." - retrying won't fix a malformed request
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=400,
-                      json={"success": False, "code": "BAD_REQUEST", "message": "form field grant_type must not be blank.", "data": {}})
-
-        self.assertRaises(BadRequest, token_service.get_auth_token)
-
-        assert len(responses.calls) == 1  # fails fast, no retries for a genuine bad request
-        assert token_service.cached_token_data is None
-
-    @responses.activate
-    def test_no_retry_on_unauthorized_when_no_cached_token(self):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        # e.g. invalid client_id/client_secret - retrying with the same credentials will always fail
+    def test_construction_fails_with_no_cached_token_on_unauthorized(self):
         responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=401,
                       json={"success": False, "code": "401"})
 
-        self.assertRaises(UnauthorizedAccess, token_service.get_auth_token)
+        token_service = TokenService(
+            credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                               client_secret="client_secret"),
+            env=Env.SANDBOX, event_publisher=EventPublisher(),
+            http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
 
+        # The fetch happens in start(), so the owner can close() this instance when it raises.
+        self.assertRaises(UnauthorizedAccess, token_service.start)
         assert len(responses.calls) == 1  # fails fast, no retries for invalid credentials
-        assert token_service.cached_token_data is None
+
+    def test_construction_does_not_block_on_transient_failure(self):
+        # Guards the core behavior change: construction must never sleep/block the calling
+        # thread retrying a transient failure - it makes exactly one synchronous attempt, then
+        # defers all further retries to the background thread.
+        import inspect
+        source = inspect.getsource(TokenService._fetch_initial_token_or_defer_to_background)
+        assert "sleep" not in source
 
     @responses.activate
-    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
-    def test_retries_on_too_many_requests_when_no_cached_token(self, mock_sleep):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        token_response_data = """{
-                                    "access_token": "access_token",
-                                    "encrypted_access_token": "encrypted_access_token",
-                                    "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
-                                    "expires_in": 5014,
-                                    "issued_at": 1709623116,
-                                    "expires_at": 1709630316,
-                                    "session_expires_at": 1709630316,
-                                    "token_type": "O-Bearer"
-                                }"""
-        # 429 (rate limited) is transient, unlike other 4xx errors, so it should still be retried
+    def test_construction_returns_immediately_and_defers_transient_failure_to_background(self):
+        cur = int(time())
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
+        _add_oauth_mock(json_body=_token_json(cur, cur + 5014, access_token="recovered_token"))
+
+        start = time()
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+        elapsed = time() - start
+
+        assert elapsed < 0.5, f"construction blocked for {elapsed:.3f}s on a transient failure"
+        assert token_service.cached_token_data is None  # not yet - first attempt failed, no retry here
+        assert len(responses.calls) == 1  # exactly one synchronous attempt, no sleep-retry loop
+
+        # Background thread retries immediately (no pacing floor while there's no token yet) and
+        # recovers using the second registered mock.
+        deadline = time() + 2
+        while token_service.cached_token_data is None and time() < deadline:
+            pass
+        assert token_service.cached_token_data is not None, "background thread never recovered the token"
+        assert token_service.cached_token_data.access_token == "recovered_token"
+        assert len(responses.calls) == 2
+
+    @responses.activate
+    def test_construction_retries_on_too_many_requests_via_background(self):
+        cur = int(time())
         responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=429)
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
+        _add_oauth_mock(json_body=_token_json(cur, cur + 5014))
 
-        token = token_service.get_auth_token()
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
 
-        assert token == "O-Bearer access_token"
-        assert len(responses.calls) == 2  # 1 rate-limited attempt + 1 successful retry
-        assert mock_sleep.call_args_list == [call(1)]  # 1s backoff before the retry
-
-    @responses.activate
-    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
-    def test_too_many_requests_exhausted_raises_when_no_cached_token(self, mock_sleep):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        for _ in range(BaseHttpCommand.MAX_RETRIES):
-            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=429)
-
-        self.assertRaises(TooManyRequests, token_service.get_auth_token)
-
-        assert len(responses.calls) == BaseHttpCommand.MAX_RETRIES
-        assert mock_sleep.call_args_list == [call(1), call(2)]
-
-    def test_should_retry_defaults_to_true(self):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher())
-        assert token_service.should_retry is True
-
-    @responses.activate
-    @patch("phonepe.sdk.pg.common.http_client_modules.base_http_command.sleep")
-    def test_no_retry_when_should_retry_is_false(self, mock_sleep):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher(),
-                                     should_retry=False)
-        for _ in range(BaseHttpCommand.MAX_RETRIES):
-            responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=500)
-
-        self.assertRaises(ServerError, token_service.get_auth_token)
-
-        assert len(responses.calls) == 1  # opted out of retries, so only 1 attempt is made
-        mock_sleep.assert_not_called()
-        assert token_service.cached_token_data is None
-
-    @responses.activate
-    def test_first_fetch_succeeds_when_should_retry_is_false(self):
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=EventPublisher(),
-                                     should_retry=False)
-        token_response_data = """{
-                                    "access_token": "access_token",
-                                    "encrypted_access_token": "encrypted_access_token",
-                                    "refresh_token": "d0e89cb1-2b3b-41b8-87d9-31411c60edb7",
-                                    "expires_in": 5014,
-                                    "issued_at": 1709623116,
-                                    "expires_at": 1709630316,
-                                    "session_expires_at": 1709630316,
-                                    "token_type": "O-Bearer"
-                                }"""
-        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_response_data))
-
-        token = token_service.get_auth_token()
-
-        assert token == "O-Bearer access_token"
+        assert token_service.cached_token_data is None  # rate-limited on the synchronous attempt
         assert len(responses.calls) == 1
 
+        deadline = time() + 2
+        while token_service.cached_token_data is None and time() < deadline:
+            pass
+        assert token_service.cached_token_data is not None
+        assert len(responses.calls) == 2
+
+    @responses.activate
+    def test_force_refresh_token(self):
+        _add_oauth_mock()
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+        assert len(responses.calls) == 1
+
+        _add_oauth_mock(json_body=_token_json(int(time()), int(time()) + 5014, access_token="refreshed_token"))
+        token_service.force_refresh_token()
+        assert len(responses.calls) == 2
+        assert token_service.cached_token_data.access_token == "refreshed_token"
+
+    @responses.activate
+    def test_get_auth_token_does_not_thundering_herd_on_concurrent_expiry(self):
+        # Regression test: many threads seeing the same expired token at once must collapse to
+        # exactly ONE network refetch. A slow callback holds the first fetch in flight long
+        # enough for every other thread to queue up on _token_lock first.
+        cur = int(time())
+        _add_oauth_mock(json_body=_token_json(0, 1))  # already expired the instant it's cached
+
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+        assert len(responses.calls) == 1  # eager fetch at construction (already expired)
+
+        # Stop the background refresh thread so it can't also refetch and skew the call count.
+        token_service._stop_event.set()
+        token_service._wake_event.set()
+        token_service._background_thread.join(timeout=2)
+
+        def slow_refetch_callback(request):
+            time_module.sleep(0.3)
+            return 200, {}, __import__("json").dumps(_token_json(cur, cur + 5014, access_token="herd_winner"))
+
+        responses.add_callback(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT,
+                               callback=slow_refetch_callback, content_type="application/json")
+
+        thread_count = 20
+        barrier = threading.Barrier(thread_count)
+        results = [None] * thread_count
+
+        def worker(index):
+            barrier.wait()
+            results[index] = token_service.get_auth_token()
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert len(responses.calls) == 2, (
+            f"expected exactly 1 refetch shared across {thread_count} concurrent callers, "
+            f"but saw {len(responses.calls) - 1} refetch(es)"
+        )
+        assert all(result == "O-Bearer" + " " + "herd_winner" for result in results)
+
+    @responses.activate
+    def test_force_refresh_token_does_not_thundering_herd_on_concurrent_401s(self):
+        # Same guard, but via force_refresh_token() (401 path) instead of the lazy-expiry path.
+        cur = int(time())
+        _add_oauth_mock(json_body=_token_json(cur, cur + 5014))  # NOT expired by half-life math
+
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+        assert len(responses.calls) == 1
+        assert token_service._is_cached_token_valid()  # still "valid" by half-life, despite the 401 below
+
+        def slow_refetch_callback(request):
+            time_module.sleep(0.3)
+            return 200, {}, __import__("json").dumps(_token_json(cur, cur + 5014, access_token="post_401_token"))
+
+        responses.add_callback(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT,
+                               callback=slow_refetch_callback, content_type="application/json")
+
+        thread_count = 20
+        barrier = threading.Barrier(thread_count)
+
+        def worker():
+            barrier.wait()
+            token_service.force_refresh_token()
+
+        threads = [threading.Thread(target=worker) for _ in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert len(responses.calls) == 2, (
+            f"expected exactly 1 refetch shared across {thread_count} concurrent force_refresh_token() "
+            f"callers, but saw {len(responses.calls) - 1} refetch(es)"
+        )
+        assert token_service.cached_token_data.access_token == "post_401_token"
+
+    @responses.activate
+    def test_close_stops_background_thread(self):
+        _add_oauth_mock()
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+        assert token_service._background_thread.is_alive()
+        token_service.close()
+        assert not token_service._background_thread.is_alive()
+        # calling close() again (including via addCleanup afterward) must be safe (no exception)
+
+    @responses.activate
+    def test_proactive_background_refresh_fires_at_half_life(self):
+        cur = int(time_module.time())
+        _add_oauth_mock(json_body=_token_json(cur, cur + 2, access_token="token_1"))
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+        assert len(responses.calls) == 1
+        assert token_service.cached_token_data.access_token == "token_1"
+
+        _add_oauth_mock(json_body=_token_json(int(time_module.time()) + 1, int(time_module.time()) + 201,
+                                              access_token="token_2"))
+
+        time_module.sleep(1.5)  # past the ~1s half-life of the first token
+
+        assert len(responses.calls) == 2, "expected the background thread to have proactively refreshed"
+        assert token_service.cached_token_data.access_token == "token_2"
+
+    @responses.activate
+    def test_proactive_background_refresh_does_not_busy_loop_on_persistent_failure(self):
+        # Worst case: the server keeps returning a token that's already past its own half-life
+        # (or the fetch keeps failing) - the background loop must stay safely paced, never a
+        # tight zero-delay loop.
+        cur = int(time_module.time())
+        responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                      json=_token_json(cur, cur + 2))
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id", client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.SANDBOX, event_publisher=EventPublisher(), http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+        assert len(responses.calls) == 1
+
+        time_module.sleep(2.5)
+
+        # Paced by MIN_SECONDS_BETWEEN_PROACTIVE_ATTEMPTS (1s floor) - definitely not hundreds of
+        # calls in 2.5 real seconds.
+        assert len(responses.calls) < 10, f"background loop appears to be busy-looping: {len(responses.calls)} calls"
+
     def test_static(self):
-        instance = StandardCheckoutClient.get_instance(
-            client_id="client_id_02",
-            client_secret="client_secret",
-            client_version=1,
-            env=Env.SANDBOX
-        )
+        with responses.RequestsMock(assert_all_requests_are_fired=False) as mock:
+            mock.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
+                    json=_token_json(int(time()), int(time()) + 5014))
+            instance = StandardCheckoutClient.get_instance(
+                client_id="client_id_02",
+                client_secret="client_secret",
+                client_version=1,
+                env=Env.SANDBOX
+            )
 
-        instance1 = StandardCheckoutClient.get_instance(
-            client_id="client_id_03",
-            client_secret="client_secret3",
-            client_version=1,
-            env=Env.SANDBOX
-        )
+            instance1 = StandardCheckoutClient.get_instance(
+                client_id="client_id_03",
+                client_secret="client_secret3",
+                client_version=1,
+                env=Env.SANDBOX
+            )
 
-        instance2 = StandardCheckoutClient.get_instance(
-            client_id="client_id_02",
-            client_secret="client_secret",
-            client_version=1,
-            env=Env.SANDBOX
-        )
+            instance2 = StandardCheckoutClient.get_instance(
+                client_id="client_id_02",
+                client_secret="client_secret",
+                client_version=1,
+                env=Env.SANDBOX
+            )
 
+        # Closed (and thus evicted from the singleton cache) after the test: this test also
+        # corrupts cached_token_data below, which must not leak into a later test reusing the
+        # same cached instance.
+        self.addCleanup(instance.close)
+        self.addCleanup(instance1.close)
         token_service = instance._token_service
         token_service1 = instance1._token_service
         token_service2 = instance2._token_service

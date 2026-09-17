@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import json
+import threading
 
 from phonepe.sdk.pg.common.base_client import BaseClient
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 from phonepe.sdk.pg.common.constants.headers import (
     SUBSCRIPTION_API_VERSION,
     SOURCE_VERSION,
@@ -78,6 +80,8 @@ class SubscriptionClient(BaseClient):
     """
 
     _cached_instances: Dict[str, BaseClient] = {}
+    _instance_lock = threading.Lock()
+    _key_locks: Dict[str, threading.Lock] = {}  # per-cache_key locks; bookkeeping guarded by _instance_lock
     headers = {SOURCE_VERSION: SUBSCRIPTION_API_VERSION}
 
     def __init__(
@@ -87,7 +91,7 @@ class SubscriptionClient(BaseClient):
         client_secret: str,
         env: Env,
         should_publish_events: bool = True,
-        should_retry: bool = True,
+        http_client_config: HttpClientConfig = None,
     ):
         """
         Initialize the SubscriptionClient class.
@@ -104,18 +108,15 @@ class SubscriptionClient(BaseClient):
             Environment (SANDBOX or PRODUCTION)
         should_publish_events: bool
             Indicates if events should be published to PhonePe
-        should_retry: bool
-            When true (default), the SDK retries transient failures (connection errors, timeouts,
-            server errors, rate-limiting) with exponential backoff. This applies both to the initial
-            OAuth token fetch (when there is no cached token yet) and to all business API calls
-            (setup, notify, cancel, order status, refund, etc.).
-            Set to false to disable this retry behaviour and fail immediately instead, e.g. if the
-            merchant already has their own retry/backoff strategy in place.
+        http_client_config: HttpClientConfig
+            Tunable HTTP connection-pool/timeout settings (pool size, keep-alive, connect
+            timeout, read timeout). Defaults to HttpClientConfig() SDK defaults if not provided.
+            See HttpClientConfig's docstring and the README's connection pool tuning section for
+            guidance on adjusting these per merchant traffic profile.
         """
         should_publish_events = should_publish_events and env == Env.PRODUCTION
         super().__init__(
-            client_id, client_secret, client_version, env, should_publish_events,
-            should_retry,
+            client_id, client_secret, client_version, env, should_publish_events, http_client_config,
         )
 
     @staticmethod
@@ -125,7 +126,7 @@ class SubscriptionClient(BaseClient):
         client_version: int,
         env: Env,
         should_publish_events: bool = True,
-        should_retry: bool = True,
+        http_client_config: HttpClientConfig = None,
     ):
         """
         Get or create an instance of SubscriptionClient class.
@@ -142,13 +143,11 @@ class SubscriptionClient(BaseClient):
             Environment (SANDBOX or PRODUCTION)
         should_publish_events: bool
             Indicates if events should be published to PhonePe
-        should_retry: bool
-            When true (default), the SDK retries transient failures (connection errors, timeouts,
-            server errors, rate-limiting) with exponential backoff. This applies both to the initial
-            OAuth token fetch (when there is no cached token yet) and to all business API calls
-            (setup, notify, cancel, order status, refund, etc.).
-            Set to false to disable this retry behaviour and fail immediately instead, e.g. if the
-            merchant already has their own retry/backoff strategy in place.
+        http_client_config: HttpClientConfig
+            Tunable HTTP connection-pool/timeout settings (pool size, keep-alive, connect
+            timeout, read timeout). Defaults to HttpClientConfig() SDK defaults if not provided.
+            See HttpClientConfig's docstring and the README's connection pool tuning section for
+            guidance on adjusting these per merchant traffic profile.
 
         Returns
         ----------
@@ -156,33 +155,38 @@ class SubscriptionClient(BaseClient):
             An instance of SubscriptionClient
         """
         should_publish_events = should_publish_events and env == Env.PRODUCTION
+        # Normalize before hashing so http_client_config=None and an equivalent explicit
+        # HttpClientConfig() map to the same cache key instead of duplicating the client.
+        effective_http_client_config = http_client_config or HttpClientConfig()
         requested_client_sha = calculate_hash(
             str(client_id),
             str(client_version),
             str(client_secret),
             str(env),
             str(should_publish_events),
-            str(should_retry),
+            str(effective_http_client_config),
             str(FlowType.SUBSCRIPTION),
         )
-        if requested_client_sha in SubscriptionClient._cached_instances.keys():
-            return SubscriptionClient._cached_instances[requested_client_sha]
 
-        new_instance = SubscriptionClient(
-            client_id=client_id,
-            client_version=client_version,
-            client_secret=client_secret,
-            env=env,
-            should_publish_events=should_publish_events,
-            should_retry=should_retry,
-        )
-        SubscriptionClient._cached_instances[requested_client_sha] = new_instance
-        init_event = build_init_client_event(
-            flow_type=FlowType.SUBSCRIPTION,
-            event_name=EventType.SUBSCRIPTION_CLIENT_INITIALIZED,
-        )
-        new_instance.event_publisher.send(init_event)
-        return SubscriptionClient._cached_instances[requested_client_sha]
+        def _build_and_register():
+            new_instance = SubscriptionClient(
+                client_id=client_id,
+                client_version=client_version,
+                client_secret=client_secret,
+                env=env,
+                should_publish_events=should_publish_events,
+                http_client_config=effective_http_client_config,
+            )
+            new_instance._cache_key = requested_client_sha
+            SubscriptionClient._cached_instances[requested_client_sha] = new_instance
+            init_event = build_init_client_event(
+                flow_type=FlowType.SUBSCRIPTION,
+                event_name=EventType.SUBSCRIPTION_CLIENT_INITIALIZED,
+            )
+            new_instance.event_publisher.send(init_event)
+            return new_instance
+
+        return SubscriptionClient._get_or_build_cached_instance(requested_client_sha, _build_and_register)
 
     def setup(self, request: PgPaymentRequest) -> PgPaymentResponse:
         """

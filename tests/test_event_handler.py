@@ -28,14 +28,17 @@ from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttp
 from phonepe.sdk.pg.common.token_handler.token_constants import OAUTH_ENDPOINT
 from phonepe.sdk.pg.common.token_handler.token_service import TokenService
 from phonepe.sdk.pg.env import Env, get_oauth_base_url, get_event_ingestion_base_url
+from phonepe.sdk.pg.common.configs.http_client_config import HttpClientConfig
 
 
 class TestEventPublisher(TestCase):
     def test_event_batch_maker_max_num_events_in_batch(self):
-        event_sender = BaseHttpCommand(host_url="")
+        event_sender = BaseHttpCommand(host_url="", http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
+        self.addCleanup(queued_event_handler.close)
         events_pushed = 20
         for event_id in range(events_pushed):
             queued_event_handler.send(BaseEvent(merchant_order_id=""))
@@ -46,10 +49,12 @@ class TestEventPublisher(TestCase):
             assert len(batch) == min(events_pushed, 100)
 
     def test_event_batch_divides_equally(self):
-        event_sender = BaseHttpCommand(host_url="")
+        event_sender = BaseHttpCommand(host_url="", http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
+        self.addCleanup(queued_event_handler.close)
         events_pushed = 20
         for event_id in range(events_pushed):
             queued_event_handler.send(BaseEvent(merchant_order_id=""))
@@ -60,10 +65,12 @@ class TestEventPublisher(TestCase):
             assert len(batch) == min(events_pushed, 2)
 
     def test_event_batch_some_left_over(self):
-        event_sender = BaseHttpCommand(host_url="")
+        event_sender = BaseHttpCommand(host_url="", http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
+        self.addCleanup(queued_event_handler.close)
         max_events_in_batch = 5
         split_over_events = 3
         events_pushed = 4 * max_events_in_batch + split_over_events
@@ -79,17 +86,14 @@ class TestEventPublisher(TestCase):
 
     @responses.activate
     def testSendsTokenFetchFailureEvent(self):
-        event_sender = BaseHttpCommand(host_url=get_event_ingestion_base_url(Env.SANDBOX))
+        event_sender = BaseHttpCommand(host_url=get_event_ingestion_base_url(Env.SANDBOX), http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         cur_time = time.time_ns()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
+        self.addCleanup(queued_event_handler.close)
 
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"),
-                                     env=Env.PRODUCTION,
-                                     event_publisher=queued_event_handler)
         token_expired_response = """{
                                                     "access_token": "access_token",
                                                     "encrypted_access_token": "encrypted_access_token",
@@ -101,6 +105,18 @@ class TestEventPublisher(TestCase):
                                                     "token_type": "O-Bearer"
                                                     }
                                                 """
+        # Registered before construction: TokenService now eagerly fetches its token at
+        # construction time (rather than lazily on the first get_auth_token() call).
+        responses.add(responses.POST, get_oauth_base_url(Env.PRODUCTION) + OAUTH_ENDPOINT, status=200,
+                      json=json.loads(token_expired_response))
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"),
+                                     env=Env.PRODUCTION,
+                                     event_publisher=queued_event_handler, http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
+
         cur_time = int(time.time_ns())  # Example value for cur_time
         two_sec_more_cur = int(cur_time + 200)
 
@@ -115,9 +131,12 @@ class TestEventPublisher(TestCase):
                     "token_type": "O-Bearer"
                 }}
                 """
-        responses.add(responses.POST, get_oauth_base_url(Env.PRODUCTION) + OAUTH_ENDPOINT, status=200,
-                      json=json.loads(token_expired_response))
-        token_service.get_auth_token()
+        # Do NOT call get_auth_token() here: the eager fetch during construction already cached
+        # the (immediately invalid, expires_in=0) token. This 500 is intentionally left for the
+        # scheduler's first send_events() tick to hit when it calls auth_token_supplier() to get
+        # a header for sending the already-queued init event - which publishes the "used cached
+        # token, refresh failed" event as a side effect, matching this test's expectation of two
+        # separate ticks (and thus two separate event_response calls).
         responses.add(responses.POST, get_oauth_base_url(Env.PRODUCTION) + OAUTH_ENDPOINT, status=500)
         responses.add(responses.POST, get_oauth_base_url(Env.PRODUCTION) + OAUTH_ENDPOINT, status=200,
                       json=json.loads(correct_token_response_data))
@@ -129,20 +148,30 @@ class TestEventPublisher(TestCase):
 
         queued_event_handler.start_publishing_events(token_service.get_auth_token)
         sleep(5)
-        assert event_response.call_count == 2  # first call for tokenInit events, second call for get cached token event
+        # The proactive background refresh thread and the scheduler's own send_events() tick
+        # (which needs a fresh auth header via auth_token_supplier() to send the queued init
+        # event) now race to be the one that discovers/refreshes the invalid token, so the exact
+        # number of separate event-batch HTTP calls is no longer deterministic (it was tied to
+        # old lazy-fetch-only timing). What matters is that both the init event and the refresh-
+        # failure event actually got delivered - check that across all delivered batches instead
+        # of pinning an exact call count.
+        assert event_response.call_count >= 1
+        delivered_bodies = "".join(
+            call.request.body.decode() if isinstance(call.request.body, bytes) else str(call.request.body)
+            for call in responses.calls if call.request.url == event_response.url
+        )
+        assert "TOKEN_SERVICE_INITIALIZED" in delivered_bodies
+        assert "OAUTH_FETCH_FAILED_USED_CACHED_TOKEN" in delivered_bodies
 
 
     @responses.activate
     def testSendsTokenFetchSuccessEvent(self):
-        event_sender = BaseHttpCommand(host_url=get_event_ingestion_base_url(Env.SANDBOX))
+        event_sender = BaseHttpCommand(host_url=get_event_ingestion_base_url(Env.SANDBOX), http_client_config=HttpClientConfig())
+        self.addCleanup(event_sender.close)
         queue_handler = EventQueueHandler()
         queued_event_handler = QueuedEventPublisher(event_sender=event_sender,
                                                     queue_handler=queue_handler)
-
-        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
-                                                                        client_version=1,
-                                                                        client_secret="client_secret"), env=Env.SANDBOX,
-                                     event_publisher=queued_event_handler)
+        self.addCleanup(queued_event_handler.close)
 
         cur_time = int(time.time_ns())  # Example value for cur_time
         two_sec_more_cur = int(cur_time + 200)
@@ -158,8 +187,16 @@ class TestEventPublisher(TestCase):
                     "token_type": "O-Bearer"
                 }}
                 """
+        # Registered before construction: TokenService now eagerly fetches its token at
+        # construction time (rather than lazily on the first get_auth_token() call).
         responses.add(responses.POST, get_oauth_base_url(Env.SANDBOX) + OAUTH_ENDPOINT, status=200,
                       json=json.loads(correct_token_response_data))
+        token_service = TokenService(credential_config=CredentialConfig(client_id="client_id",
+                                                                        client_version=1,
+                                                                        client_secret="client_secret"), env=Env.SANDBOX,
+                                     event_publisher=queued_event_handler, http_client_config=HttpClientConfig())
+        self.addCleanup(token_service.close)
+        token_service.start()
 
         event_response = responses.add(responses.POST, get_event_ingestion_base_url(Env.SANDBOX) + EVENT_BULK_ENDPOINT,
                                        status=200,

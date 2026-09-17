@@ -691,7 +691,12 @@ class OrderStatusTestWithOauth(BaseTestWithOauth):
             ],
         )
 
-        assert len(responses.calls) == 2
+        # Was 2 (1 oauth + 1 order-status GET) under the old lazy-fetch model, when this test
+        # happened to be the first one in the whole suite to use the shared custom_checkout_client
+        # singleton and thus triggered its lazy token fetch. TokenService now fetches its token
+        # eagerly at construction time instead, so by the time any test runs, the shared
+        # singleton's token is already cached - only the order-status GET remains here.
+        assert len(responses.calls) == 1
         assert response_object == expected_order_status_obj
 
     @responses.activate

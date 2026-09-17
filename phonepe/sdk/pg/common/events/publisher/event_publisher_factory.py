@@ -19,15 +19,21 @@ from phonepe.sdk.pg.common.http_client_modules.base_http_command import BaseHttp
 
 
 class EventPublisherFactory:
-    cached_publisher = None
+    """Builds (and memoizes per-instance) the EventPublisher used by one BaseClient instance.
+    Previously `cached_publisher` was a CLASS attribute, so every BaseClient in the process
+    shared the same QueuedEventPublisher/scheduler/event_sender - later clients' own event_sender
+    was silently discarded and never closed. Caching per-instance fixes this while still avoiding
+    building a new QueuedEventPublisher on every get_event_publisher() call.
+    """
 
     def __init__(self, event_sender: BaseHttpCommand):
         self.event_sender = event_sender
+        self._cached_publisher = None
 
     def get_event_publisher(self, should_publish_events: bool):
         if should_publish_events:
-            if not EventPublisherFactory.cached_publisher:
-                EventPublisherFactory.cached_publisher = QueuedEventPublisher(queue_handler=EventQueueHandler(),
-                                                                              event_sender=self.event_sender)
-            return EventPublisherFactory.cached_publisher
+            if not self._cached_publisher:
+                self._cached_publisher = QueuedEventPublisher(queue_handler=EventQueueHandler(),
+                                                              event_sender=self.event_sender)
+            return self._cached_publisher
         return EventPublisher()

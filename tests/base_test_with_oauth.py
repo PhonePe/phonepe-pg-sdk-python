@@ -30,7 +30,12 @@ class BaseTestWithOauth(TestCase):
     custom_checkout_client = None
     subscription_client = None
 
+    @responses.activate
     def setUp(self) -> None:
+        # Client construction now eagerly fetches an OAuth token (see TokenService), so this
+        # setUp() needs its own active responses mock covering that fetch - the test method's
+        # own @responses.activate (if any) only wraps the method itself, not setUp(), which
+        # unittest/pytest always calls beforehand, outside that decorator's scope.
         token_response_data = """{
                                     "access_token": "access_token",
                                     "encrypted_access_token": "encrypted_access_token",
@@ -62,3 +67,11 @@ class BaseTestWithOauth(TestCase):
                                                                                 client_secret="client_secret",
                                                                                 env=Env.SANDBOX,
                                                                                 should_publish_events=False)
+
+        # Close the clients when the test finishes. Without this, every test leaves behind a
+        # cached client whose background token-refresh thread stays alive for the rest of the
+        # session; one of those can wake mid-test and issue an unmocked OAuth call, which
+        # `responses` records and which then breaks other tests' call-count assertions.
+        self.addCleanup(BaseTestWithOauth.standard_checkout_client.close)
+        self.addCleanup(BaseTestWithOauth.custom_checkout_client.close)
+        self.addCleanup(BaseTestWithOauth.subscription_client.close)

@@ -25,3 +25,8 @@ class EventPublisher(ABC):
 
     def start_publishing_events(self, auth_token_supplier: Callable):
         pass
+
+    def close(self):
+        """Releases any background resources held by this publisher. No-op by default - the
+        no-op EventPublisher used when should_publish_events=False holds nothing to release."""
+        pass
