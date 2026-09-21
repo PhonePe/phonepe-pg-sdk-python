@@ -25,6 +25,9 @@ from phonepe.sdk.pg.common.models.response.payment_instruments.account_payment_i
 from phonepe.sdk.pg.common.models.response.payment_instruments.credit_card_payment_instrument_v2 import (
     CreditCardPaymentInstrumentV2,
 )
+from phonepe.sdk.pg.common.models.response.payment_instruments.credit_line_payment_instrument_v2 import (
+    CreditLinePaymentInstrumentV2,
+)
 from phonepe.sdk.pg.common.models.response.payment_instruments.debit_card_payment_instrument_v2 import (
     DebitCardPaymentInstrumentV2,
 )
@@ -268,6 +271,115 @@ class TestValidateCallback(BaseTestWithOauth):
         )
 
         assert callback_response_object == actual_callback_response
+
+    @responses.activate
+    def test_validate_PG_ORDER_COMPLETED_via_credit_line(self):
+        merchant_transaction_id = "merchant_transaction_id"
+
+        # prepare expected request
+        check_status_url = get_pg_base_url(Env.SANDBOX) + ORDER_STATUS_API.format(
+            merchant_order_id=merchant_transaction_id
+        )
+        response_string = """{
+          "event" : "pg.order.completed",
+          "type": "PG_ORDER_COMPLETED",
+          "payload": {
+            "orderId": "OMOxx",
+            "merchantId": "merchantId",
+            "merchantOrderId": "merchantOrderId",
+            "state": "EXPIRED",
+            "amount": 10000,
+            "expireAt": 1291391291,
+            "metaInfo": {
+              "udf1": "",
+              "udf2": "",
+              "udf3": "",
+              "udf4": "",
+              "udf5": ""
+            },
+            "paymentDetails": [
+              {
+                "paymentMode": "UPI_COLLECT",
+                "timestamp": 12121212,
+                "amount": 10000,
+                "transactionId": "OM12333",
+                "state": "FAILED",
+                "errorCode": "AUTHORIZATION_ERROR",
+                "detailedErrorCode": "ZM",
+                "rail": {
+                  "type": "PPI_EGV"
+                },
+                "instrument": {
+                  "type": "CREDIT_LINE",
+                  "maskedAccountNumber": "<maskedAccountNumber>",
+                  "ifsc": "<ifsc>",
+                  "accountHolderName": "<accountHolderName>",
+                  "bankId": "<bankId>",
+                  "providerAccountType": "CREDITLINE"
+                }
+              }
+            ]
+          }
+        }
+        """
+
+        actual_callback_response = BaseTestWithOauth.standard_checkout_client.validate_callback(
+            username="username",
+            password="password",
+            callback_response_data=response_string,
+            callback_header_data="bc842c31a9e54efe320d30d948be61291f3ceee4766e36ab25fa65243cd76e0e",
+        )
+
+        responses.add(
+            responses.GET,
+            check_status_url,
+            status=200,
+            body="",
+            json=json.loads(response_string),
+        )
+
+        callback_response_object = CallbackResponse(
+            event="pg.order.completed",
+            type=CallbackType.PG_ORDER_COMPLETED,
+            payload=CallbackData(
+                merchant_id="merchantId",
+                order_id="OMOxx",
+                merchant_order_id="merchantOrderId",
+                original_merchant_order_id=None,
+                refund_id=None,
+                merchant_refund_id=None,
+                state="EXPIRED",
+                amount=10000,
+                expire_at=1291391291,
+                error_code=None,
+                detailed_error_code=None,
+                meta_info=MetaInfo(udf1="", udf2="", udf3="", udf4="", udf5=""),
+                payment_details=[
+                    PaymentDetail(
+                        transaction_id="OM12333",
+                        payment_mode=PgV2InstrumentType.UPI_COLLECT,
+                        timestamp=12121212,
+                        amount=10000,
+                        state="FAILED",
+                        error_code="AUTHORIZATION_ERROR",
+                        detailed_error_code="ZM",
+                        instrument=CreditLinePaymentInstrumentV2(
+                            type=PaymentInstrumentV2Type.CREDIT_LINE,
+                            masked_account_number="<maskedAccountNumber>",
+                            ifsc="<ifsc>",
+                            account_holder_name="<accountHolderName>",
+                            bank_id="<bankId>",
+                            provider_account_type="CREDITLINE",
+                        ),
+                        rail=PpiEgvPaymentRail(type=PaymentRailType.PPI_EGV),
+                        split_instruments=None,
+                    )
+                ],
+            ),
+        )
+
+        assert callback_response_object == actual_callback_response
+
 
     @responses.activate
     def test_validate_PG_ORDER_COMPLETED_via_credit_card(self):
