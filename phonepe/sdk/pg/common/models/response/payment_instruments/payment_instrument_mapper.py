@@ -21,6 +21,9 @@ from phonepe.sdk.pg.common.models.response.payment_instruments.account_payment_i
 from phonepe.sdk.pg.common.models.response.payment_instruments.credit_card_payment_instrument_v2 import (
     CreditCardPaymentInstrumentV2,
 )
+from phonepe.sdk.pg.common.models.response.payment_instruments.credit_line_payment_instrument_v2 import (
+    CreditLinePaymentInstrumentV2,
+)
 from phonepe.sdk.pg.common.models.response.payment_instruments.debit_card_payment_instrument_v2 import (
     DebitCardPaymentInstrumentV2,
 )
@@ -44,6 +47,7 @@ INSTRUMENT_MAPPER = {
     PaymentInstrumentV2Type.WALLET: WalletPaymentInstrumentV2,
     PaymentInstrumentV2Type.CREDIT_CARD: CreditCardPaymentInstrumentV2,
     PaymentInstrumentV2Type.DEBIT_CARD: DebitCardPaymentInstrumentV2,
+    PaymentInstrumentV2Type.CREDIT_LINE: CreditLinePaymentInstrumentV2,
 }
 
 

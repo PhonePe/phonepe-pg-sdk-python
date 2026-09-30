@@ -27,6 +27,9 @@ from phonepe.sdk.pg.common.models.response.payment_instruments.account_payment_i
 from phonepe.sdk.pg.common.models.response.payment_instruments.credit_card_payment_instrument_v2 import (
     CreditCardPaymentInstrumentV2,
 )
+from phonepe.sdk.pg.common.models.response.payment_instruments.credit_line_payment_instrument_v2 import (
+    CreditLinePaymentInstrumentV2,
+)
 from phonepe.sdk.pg.common.models.response.payment_instruments.egv_payment_instrument_v2 import (
     EvgPaymentInstrumentV2,
 )
@@ -546,6 +549,67 @@ class OrderStatusTestWithOauth(BaseTestWithOauth):
                         transaction_id="<transactionId>",
                         authorization_code="<authorizationCode>",
                         service_transaction_id="<serviceTransactionId>",
+                    ),
+                    split_instruments=None,
+                )
+            ],
+        )
+
+        assert len(responses.calls) == 1
+        assert response_object == expected_order_status_obj
+
+    @responses.activate
+    def test_credit_line_success(self):
+        merchant_transaction_id = "merchant_transaction_id"
+
+        # prepare expected request
+        check_status_url = get_pg_base_url(Env.SANDBOX) + ORDER_STATUS_API.format(
+            merchant_order_id=merchant_transaction_id
+        )
+        response_string = """{"orderId": "OMO2607151547579376222138V", "state": "COMPLETED", "amount": 100, "expireAt": 1784111877938, "paymentDetails": [{"paymentMode": "UPI_INTENT", "transactionId": "OM2607151547580748627290V", "timestamp": 1784110678105, "amount": 100, "state": "COMPLETED", "rail": {"type": "UPI", "utr": "<utr>", "upiTransactionId": "<upiTransactionId>", "vpa": "<vpa>"}, "instrument": {"type": "CREDIT_LINE", "maskedAccountNumber": "<maskedAccountNumber>", "ifsc": "<ifsc>", "accountHolderName": "<accountHolderName>", "bankId": "<bankId>", "providerAccountType": "CREDITLINE"}}]}"""
+        standard_checkout_client = BaseTestWithOauth.standard_checkout_client
+        responses.add(
+            responses.GET,
+            check_status_url,
+            status=200,
+            body="",
+            json=json.loads(response_string),
+        )
+        response_object = standard_checkout_client.get_order_status(
+            merchant_order_id=merchant_transaction_id
+        )
+        expected_order_status_obj = OrderStatusResponse(
+            merchant_id=None,
+            merchant_order_id=None,
+            order_id="OMO2607151547579376222138V",
+            state="COMPLETED",
+            amount=100,
+            expire_at=1784111877938,
+            detailed_error_code=None,
+            error_code=None,
+            meta_info=None,
+            payment_details=[
+                PaymentDetail(
+                    transaction_id="OM2607151547580748627290V",
+                    payment_mode=PgV2InstrumentType.UPI_INTENT,
+                    timestamp=1784110678105,
+                    amount=100,
+                    state="COMPLETED",
+                    error_code=None,
+                    detailed_error_code=None,
+                    instrument=CreditLinePaymentInstrumentV2(
+                        type=PaymentInstrumentV2Type.CREDIT_LINE,
+                        masked_account_number="<maskedAccountNumber>",
+                        ifsc="<ifsc>",
+                        account_holder_name="<accountHolderName>",
+                        bank_id="<bankId>",
+                        provider_account_type="CREDITLINE",
+                    ),
+                    rail=UpiPaymentRail(
+                        type=PaymentRailType.UPI,
+                        utr="<utr>",
+                        upi_transaction_id="<upiTransactionId>",
+                        vpa="<vpa>",
                     ),
                     split_instruments=None,
                 )
